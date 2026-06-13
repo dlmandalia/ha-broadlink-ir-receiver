@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "BroadLink IR Receiver",
+        "description": "Configure your BroadLink RM device as a passive IR receiver. The device must be on the same network.",
+        "data": {
+          "host": "Device IP Address",
+          "name": "Device Name"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the device. Check the IP address and ensure the device is online.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This device is already configured."
+    }
+  }
+}
