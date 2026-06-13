@@ -276,11 +276,17 @@ async def ws_clear_codes(hass, connection, msg):
 # ---------------------------------------------------------------------------
 
 
-def _register_panel(hass: HomeAssistant) -> None:
-    hass.http.register_static_path(
-        f"/api/{DOMAIN}/panel.js",
-        hass.config.path(f"custom_components/{DOMAIN}/panel.js"),
-        cache_headers=False,
+async def _register_panel(hass: HomeAssistant) -> None:
+    from homeassistant.components.http import StaticPathConfig
+
+    await hass.http.async_register_static_paths(
+        [
+            StaticPathConfig(
+                f"/api/{DOMAIN}/panel.js",
+                hass.config.path(f"custom_components/{DOMAIN}/panel.js"),
+                cache_headers=False,
+            )
+        ]
     )
     async_register_built_in_panel(
         hass,
@@ -317,7 +323,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         websocket_api.async_register_command(hass, ws_get_state)
         websocket_api.async_register_command(hass, ws_toggle)
         websocket_api.async_register_command(hass, ws_clear_codes)
-        _register_panel(hass)
+        await _register_panel(hass)
         hass.data[DOMAIN]["_panel_registered"] = True
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
