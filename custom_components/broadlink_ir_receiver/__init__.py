@@ -1,25 +1,30 @@
-import asyncio
 import logging
 import threading
 import time
+from collections import deque
 
 import broadlink
+import voluptuous as vol
 
+from homeassistant.components import websocket_api
+from homeassistant.components.frontend import async_register_built_in_panel
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.core import HomeAssistant
 
-from .const import DEFAULT_DEBOUNCE, DEFAULT_POLL_INTERVAL, DOMAIN, EVENT_IR_COMMAND
+from .const import (
+    DEFAULT_DEBOUNCE,
+    DEFAULT_POLL_INTERVAL,
+    DOMAIN,
+    EVENT_IR_COMMAND,
+    MAX_CODE_HISTORY,
+    PLATFORMS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def decode_nec(data: bytes) -> str | None:
-    """Decode NEC IR protocol from BroadLink raw data.
-
-    Returns an 8-char hex string like '00FF807F' for a valid 32-bit NEC frame,
-    or None for repeat frames, partial data, or non-IR signals.
-    """
     if len(data) < 6 or data[0] != 0x26:
         return None
     timings = list(data[6:])
@@ -45,15 +50,37 @@ def decode_nec(data: bytes) -> str | None:
 
 
 class BroadlinkIRListener:
-    """Listens for IR signals on a BroadLink RM device and fires HA events."""
 
-    def __init__(self, hass: HomeAssistant, host: str, name: str) -> None:
+    def __init__(
+        self, hass: HomeAssistant, host: str, name: str, entry_id: str
+    ) -> None:
         self._hass = hass
         self._host = host
         self._name = name
+        self._entry_id = entry_id
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._dev = None
+        self._enabled = True
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        self._enabled = value
+        _LOGGER.info(
+            "IR listener %s for %s", "enabled" if value else "disabled", self._name
+        )
+
+    @property
+    def host(self) -> str:
+        return self._host
+
+    @property
+    def name(self) -> str:
+        return self._name
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -92,14 +119,29 @@ class BroadlinkIRListener:
             except Exception:
                 break
 
-    def _fire_event(self, nec_code: str) -> None:
-        self._hass.bus.fire(
-            EVENT_IR_COMMAND,
-            {"nec_code": nec_code, "device": self._name, "host": self._host},
-        )
+    def _fire_event(self, nec_code: str | None, raw_data: bytes, protocol: str) -> None:
+        raw_hex = raw_data.hex() if raw_data else ""
+        event_data = {
+            "nec_code": nec_code,
+            "raw_hex": raw_hex,
+            "protocol": protocol,
+            "device": self._name,
+            "host": self._host,
+            "timestamp": time.time(),
+        }
+
+        entry_data = self._hass.data.get(DOMAIN, {}).get(self._entry_id)
+        if entry_data and "code_history" in entry_data:
+            entry_data["code_history"].append(event_data)
+
+        self._hass.bus.fire(EVENT_IR_COMMAND, event_data)
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
+            if not self._enabled:
+                self._stop_event.wait(0.5)
+                continue
+
             if not self._connect():
                 self._stop_event.wait(10)
                 continue
@@ -112,6 +154,10 @@ class BroadlinkIRListener:
             learning = False
 
             while not self._stop_event.is_set():
+                if not self._enabled:
+                    learning = False
+                    break
+
                 try:
                     if not learning:
                         try:
@@ -142,19 +188,24 @@ class BroadlinkIRListener:
                         continue
 
                     learning = False
+
                     nec = decode_nec(data)
-                    if not nec:
-                        continue
+                    protocol = "NEC" if nec else "Unknown"
+                    code_key = nec or data[:8].hex()
 
                     now = time.monotonic()
-                    if nec == last_code and (now - last_time) < DEFAULT_DEBOUNCE:
+                    if code_key == last_code and (now - last_time) < DEFAULT_DEBOUNCE:
                         continue
-
-                    last_code = nec
+                    last_code = code_key
                     last_time = now
 
-                    _LOGGER.debug("IR received: NEC=%s len=%d", nec, len(data))
-                    self._fire_event(nec)
+                    _LOGGER.debug(
+                        "IR received: protocol=%s code=%s len=%d",
+                        protocol,
+                        code_key,
+                        len(data),
+                    )
+                    self._fire_event(nec_code=nec, raw_data=data, protocol=protocol)
 
                 except broadlink.exceptions.DeviceOfflineError:
                     _LOGGER.warning("Device %s offline, reconnecting...", self._name)
@@ -168,22 +219,118 @@ class BroadlinkIRListener:
                     learning = False
 
 
+# ---------------------------------------------------------------------------
+# WebSocket API
+# ---------------------------------------------------------------------------
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "broadlink_ir_receiver/get_state"}
+)
+@websocket_api.async_response
+async def ws_get_state(hass, connection, msg):
+    entries = {}
+    for entry_id, data in hass.data.get(DOMAIN, {}).items():
+        if not isinstance(data, dict) or "listener" not in data:
+            continue
+        listener = data["listener"]
+        entries[entry_id] = {
+            "enabled": listener.enabled,
+            "host": listener.host,
+            "name": listener.name,
+            "codes": list(data.get("code_history", [])),
+        }
+    connection.send_result(msg["id"], {"entries": entries})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "broadlink_ir_receiver/toggle",
+        vol.Required("entry_id"): str,
+        vol.Required("enabled"): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_toggle(hass, connection, msg):
+    data = hass.data.get(DOMAIN, {}).get(msg["entry_id"])
+    if data and "listener" in data:
+        data["listener"].enabled = msg["enabled"]
+        connection.send_result(msg["id"], {"enabled": msg["enabled"]})
+    else:
+        connection.send_error(msg["id"], "not_found", "Entry not found")
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "broadlink_ir_receiver/clear_codes"}
+)
+@websocket_api.async_response
+async def ws_clear_codes(hass, connection, msg):
+    for data in hass.data.get(DOMAIN, {}).values():
+        if isinstance(data, dict) and "code_history" in data:
+            data["code_history"].clear()
+    connection.send_result(msg["id"], {})
+
+
+# ---------------------------------------------------------------------------
+# Panel + setup
+# ---------------------------------------------------------------------------
+
+
+def _register_panel(hass: HomeAssistant) -> None:
+    hass.http.register_static_path(
+        f"/api/{DOMAIN}/panel.js",
+        hass.config.path(f"custom_components/{DOMAIN}/panel.js"),
+        cache_headers=False,
+    )
+    async_register_built_in_panel(
+        hass,
+        component_name="custom",
+        sidebar_title="IR Receiver",
+        sidebar_icon="mdi:remote",
+        frontend_url_path="broadlink-ir-receiver",
+        config={
+            "_panel_custom": {
+                "name": "broadlink-ir-panel",
+                "module_url": f"/api/{DOMAIN}/panel.js",
+            }
+        },
+        require_admin=False,
+    )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
     host = entry.data[CONF_HOST]
     name = entry.data.get(CONF_NAME, f"BroadLink {host}")
 
-    listener = BroadlinkIRListener(hass, host, name)
-    hass.data[DOMAIN][entry.entry_id] = listener
+    listener = BroadlinkIRListener(hass, host, name, entry.entry_id)
+
+    hass.data[DOMAIN][entry.entry_id] = {
+        "listener": listener,
+        "code_history": deque(maxlen=MAX_CODE_HISTORY),
+    }
 
     await hass.async_add_executor_job(listener.start)
+
+    if "_panel_registered" not in hass.data[DOMAIN]:
+        websocket_api.async_register_command(hass, ws_get_state)
+        websocket_api.async_register_command(hass, ws_toggle)
+        websocket_api.async_register_command(hass, ws_clear_codes)
+        _register_panel(hass)
+        hass.data[DOMAIN]["_panel_registered"] = True
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    listener = hass.data[DOMAIN].pop(entry.entry_id, None)
-    if listener:
-        await hass.async_add_executor_job(listener.stop)
-    return True
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+    if unload_ok:
+        data = hass.data[DOMAIN].pop(entry.entry_id, None)
+        if data and "listener" in data:
+            await hass.async_add_executor_job(data["listener"].stop)
+
+    return unload_ok
