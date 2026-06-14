@@ -2,13 +2,28 @@
 
 Turn your **BroadLink RM4 Mini** (or any RM-series device) into a passive IR receiver for Home Assistant. Use **any IR remote** to trigger automations — no BroadLink cloud, no app required.
 
+## Features
+
+- **Dedicated IR Receiver Panel** — sidebar page showing live received codes in real-time
+- **Toggle ON/OFF** — enable or disable the IR listener from the panel or via a switch entity
+- **Multi-protocol display** — NEC decoded hex codes + raw data for unknown protocols
+- **Copy codes** — one-click copy of received codes for use in automations
+- **Sensor entity** — shows the last received IR code with protocol attributes
+- **Event-driven** — fires `broadlink_ir_command` events for automation triggers
+- **HACS compatible** — easy install and updates
+
 ## How It Works
 
 ```
-IR Remote → BroadLink RM4 Mini → This Integration → HA Event → Your Automation
+IR Remote --> BroadLink RM4 Mini --> This Integration --> HA Event --> Your Automation
+                                         |
+                                    IR Receiver Panel (live view)
 ```
 
-The integration continuously listens for IR signals using BroadLink's learning mode. When it receives a signal, it decodes the NEC protocol and fires a `broadlink_ir_command` event with the decoded button code. You create automations that trigger on specific codes.
+The integration continuously listens for IR signals using BroadLink's learning mode. When it receives a signal, it decodes the NEC protocol (or captures raw data for other protocols) and:
+1. Fires a `broadlink_ir_command` event
+2. Updates the Last IR Code sensor entity
+3. Displays the code live in the IR Receiver panel
 
 ## Requirements
 
@@ -20,49 +35,98 @@ The integration continuously listens for IR signals using BroadLink's learning m
 
 ### HACS (Recommended)
 
-1. Open HACS in Home Assistant
-2. Click the three dots menu → **Custom repositories**
-3. Add `https://github.com/dlmandalia/ha-broadlink-ir-receiver` with category **Integration**
-4. Search for "BroadLink IR Receiver" and install
-5. Restart Home Assistant
+1. Open **HACS** in Home Assistant
+2. Click the three dots menu (**...**) in the top right corner
+3. Select **Custom repositories**
+4. Paste the repository URL:
+   ```
+   https://github.com/dlmandalia/ha-broadlink-ir-receiver
+   ```
+5. Set category to **Integration** and click **Add**
+6. Go back to HACS, search for **BroadLink IR Receiver**
+7. Click **Download** and confirm
+8. **Restart Home Assistant**
 
 ### Manual Installation
 
-1. Download the `custom_components/broadlink_ir_receiver` folder from this repository
-2. Copy it to your Home Assistant `config/custom_components/` directory
-3. Restart Home Assistant
+1. Download this repository (Code -> Download ZIP, or clone it):
+   ```bash
+   git clone https://github.com/dlmandalia/ha-broadlink-ir-receiver.git
+   ```
+2. Copy the `custom_components/broadlink_ir_receiver` folder to your Home Assistant `config/custom_components/` directory:
+   ```
+   config/
+     custom_components/
+       broadlink_ir_receiver/
+         __init__.py
+         config_flow.py
+         const.py
+         manifest.json
+         panel.js
+         sensor.py
+         switch.py
+         strings.json
+         translations/
+           en.json
+   ```
+3. **Restart Home Assistant**
 
-## Configuration
+## Setup
 
-1. Go to **Settings → Devices & Services → Add Integration**
+1. Go to **Settings -> Devices & Services -> Add Integration**
 2. Search for **BroadLink IR Receiver**
-3. Enter your BroadLink device's IP address
-4. Done! The integration starts listening immediately
+3. Enter your BroadLink device's **IP address** and a friendly name
+4. Click **Submit** — the integration starts listening immediately
+5. The **IR Receiver** panel appears in the sidebar
+
+## Using the IR Receiver Panel
+
+After setup, click **IR Receiver** in the sidebar. You'll see:
+
+- **Device card** — shows your BroadLink device with IP, status (listening/off), and an ON/OFF toggle button
+- **Received Codes list** — live-updating table with:
+  - **Time** — when the code was received
+  - **Protocol** — NEC (green badge), Unknown (orange badge), or RF (blue badge, future)
+  - **Code** — the decoded hex value (NEC) or raw data prefix
+  - **Copy button** — copies the code to your clipboard
+
+Press any button on your IR remote and the code appears instantly in the panel.
+
+## Entities Created
+
+| Entity | Type | Description |
+|--------|------|-------------|
+| `switch.broadlink_ir_receiver_receiver` | Switch | Toggle the IR listener on/off |
+| `sensor.broadlink_ir_receiver_last_ir_code` | Sensor | Shows the last received IR code with protocol attributes |
 
 ## Finding Button Codes
 
-After setup, press any button on your IR remote. The integration fires a `broadlink_ir_command` event. To see the codes:
+The easiest way is to use the **IR Receiver panel**:
 
-1. Go to **Developer Tools → Events → Listen to events**
-2. Enter `broadlink_ir_command` and click **Start listening**
-3. Press buttons on your remote — you'll see events like:
+1. Click **IR Receiver** in the sidebar
+2. Make sure the receiver is **ON** (toggle button should be cyan/blue)
+3. Point your remote at the BroadLink device and press buttons
+4. Codes appear in the list — click **Copy** to copy the code
+
+Alternatively, use **Developer Tools -> Events -> Listen to events**, enter `broadlink_ir_command`, and press remote buttons to see:
 
 ```json
 {
   "event_type": "broadlink_ir_command",
   "data": {
     "nec_code": "00FF807F",
+    "raw_hex": "2600a80094...",
+    "protocol": "NEC",
     "device": "BroadLink IR Receiver",
-    "host": "10.0.3.41"
+    "host": "10.0.3.41",
+    "timestamp": 1718359200.123
   }
 }
 ```
 
-4. Note down the `nec_code` for each button you want to use
-
 ## Creating Automations
 
-### Example: Toggle a light with a remote button
+### Toggle a light with a remote button
 
 ```yaml
 automation:
@@ -78,7 +142,7 @@ automation:
           entity_id: light.ceiling_light
 ```
 
-### Example: Control TV volume
+### Control TV volume
 
 ```yaml
 automation:
@@ -92,20 +156,9 @@ automation:
       - service: media_player.volume_up
         target:
           entity_id: media_player.living_room_tv
-
-  - alias: "IR Remote - Volume Down"
-    trigger:
-      - platform: event
-        event_type: broadlink_ir_command
-        event_data:
-          nec_code: "00FFC03F"
-    action:
-      - service: media_player.volume_down
-        target:
-          entity_id: media_player.living_room_tv
 ```
 
-### Example: Scene activation with multiple buttons
+### Scene activation
 
 ```yaml
 automation:
@@ -123,28 +176,48 @@ automation:
 
 ## Multiple Devices
 
-You can add multiple BroadLink devices — each one becomes an independent IR receiver. Events include the `device` name and `host` IP so you can distinguish which device received the signal.
+You can add multiple BroadLink devices — each one becomes an independent IR receiver. Events include the `device` name and `host` IP so you can filter by device in automations:
+
+```yaml
+trigger:
+  - platform: event
+    event_type: broadlink_ir_command
+    event_data:
+      nec_code: "00FF807F"
+      host: "10.0.3.41"
+```
 
 ## NEC Protocol
 
-This integration decodes **NEC infrared protocol**, which is used by the vast majority of IR remotes (TV remotes, fan remotes, light remotes, AC remotes, etc.). The 8-character hex code (e.g., `00FF807F`) uniquely identifies each button on a remote.
+This integration decodes **NEC infrared protocol**, used by the vast majority of IR remotes (TV, fan, light, AC, etc.). The 8-character hex code (e.g., `00FF807F`) uniquely identifies each button.
 
-The code format is: `AACCBBDD` where:
+Code format: `AACCBBDD`
 - `AA` = device address
-- `CC` = inverted device address  
+- `CC` = inverted device address
 - `BB` = command
 - `DD` = inverted command
 
+Non-NEC remotes are also captured — the raw hex data is displayed and can be used in automations via the `raw_hex` field.
+
 ## Troubleshooting
 
-**Device not found**: Ensure the BroadLink device is on the same network and the IP is correct. Try pinging the IP.
+| Problem | Solution |
+|---------|----------|
+| **Device not found** | Ensure the BroadLink device is on the same network and the IP is correct. Try pinging the IP. |
+| **No codes appearing** | Check HA logs (**Settings -> System -> Logs**). Make sure the receiver is toggled ON. |
+| **"Failed to set up"** | Check that `broadlink>=0.18.0` is installed. Restart HA after installation. |
+| **Codes appear but automation doesn't trigger** | Ensure the `nec_code` matches exactly (case-sensitive, 8 characters). |
+| **Panel not in sidebar** | Restart HA. The panel registers on first setup. |
 
-**No events firing**: Check the Home Assistant logs for errors. The integration logs connection status at startup.
+## Supported Devices
 
-**Inconsistent codes**: Some non-NEC remotes may not work. The integration only decodes NEC protocol frames.
-
-**Events firing but automation not triggering**: Make sure the `nec_code` in your automation exactly matches (case-sensitive, 8 characters).
+Any BroadLink device that supports learning mode:
+- RM4 Mini (tested)
+- RM4 Pro
+- RM Mini 3
+- RM Pro
+- RM Pro+
 
 ## License
 
-MIT License — use it however you want.
+MIT License
