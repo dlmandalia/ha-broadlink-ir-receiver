@@ -9,6 +9,7 @@ Turn your **BroadLink RM4 Mini** (or any RM-series device) into a passive IR rec
 - **Multi-protocol display** — NEC decoded hex codes + raw data for unknown protocols
 - **Copy codes** — one-click copy of received codes for use in automations
 - **Sensor entity** — shows the last received IR code with protocol attributes
+- **Notifications toggle** — optional persistent notification per received code (handy while building automations; off by default)
 - **Event-driven** — fires `broadlink_ir_command` events for automation triggers
 - **HACS compatible** — easy install and updates
 
@@ -97,6 +98,7 @@ Press any button on your IR remote and the code appears instantly in the panel.
 | Entity | Type | Description |
 |--------|------|-------------|
 | `switch.broadlink_ir_receiver_receiver` | Switch | Toggle the IR listener on/off |
+| `switch.broadlink_ir_receiver_notifications` | Switch | When on, posts a persistent notification for each received code (off by default) |
 | `sensor.broadlink_ir_receiver_last_ir_code` | Sensor | Shows the last received IR code with protocol attributes |
 
 ## Finding Button Codes
