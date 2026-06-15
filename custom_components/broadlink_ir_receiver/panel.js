@@ -105,6 +105,18 @@ class BroadlinkIRPanel extends HTMLElement {
   _toast(m) { const t = this._$("toast"); if (!t) return; t.textContent = m; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1800); }
   _fmtTime(ts) { return new Date(ts * 1000).toLocaleTimeString(); }
 
+  _findNotifEntity(entryId) {
+    const states = this._hass?.states || {};
+    return Object.values(states).find(s =>
+      s.entity_id.startsWith("switch.") && s.entity_id.includes("notifications") &&
+      s.attributes?.friendly_name?.includes(this._entries[entryId]?.name?.trim())
+    );
+  }
+  _isNotifOn(entryId) {
+    const e = this._findNotifEntity(entryId);
+    return e ? e.state === "on" : false;
+  }
+
   _flashMatch(ev) {
     const code = ev.nec_code || (ev.raw_hex || "").substring(0, 16);
     const m = this._curMaps().find(x => x.ir_code === code);
@@ -459,7 +471,8 @@ class BroadlinkIRPanel extends HTMLElement {
         <div class="dev-menu">
           <button class="dev-menu-btn" data-menu="${id}">⋮</button>
           <div class="dev-menu-drop" id="menu-${id}">
-            <button data-toggle="${id}">${e.enabled ? "Turn off" : "Turn on"}</button>
+            <button data-toggle="${id}">${e.enabled ? "Receiver off" : "Receiver on"}</button>
+            <button data-notif="${id}">${this._isNotifOn(id) ? "Notifications off" : "Notifications on"}</button>
             <button class="danger" data-remove="${id}">Remove device</button>
           </div>
         </div>
@@ -497,6 +510,19 @@ class BroadlinkIRPanel extends HTMLElement {
         const id = btn.dataset.toggle;
         const on = !(this._entries[id]?.enabled);
         this._toggleEntry(id, on);
+      });
+    });
+
+    el.querySelectorAll("[data-notif]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.notif;
+        const entity = this._findNotifEntity(id);
+        if (!entity) { this._toast("Notifications entity not found"); return; }
+        const on = entity.state !== "on";
+        const [domain, svc] = (on ? "switch.turn_on" : "switch.turn_off").split(".");
+        this._hass.callService(domain, svc, { entity_id: entity.entity_id });
+        this._toast(on ? "Notifications on" : "Notifications off");
+        setTimeout(() => this._renderTopbar(), 500);
       });
     });
 
