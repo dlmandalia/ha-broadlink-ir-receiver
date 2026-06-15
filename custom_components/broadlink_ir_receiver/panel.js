@@ -11,6 +11,12 @@ class BroadlinkIRPanel extends HTMLElement {
     this._entities = [];
     this._services = [];
     this._captureSub = null;
+    this._activeEntry = null;
+    this._logFilter = null;
+  }
+
+  static get RF_DEVTYPES() {
+    return new Set([0x51DA,0x61A2,0x649B,0x653C,0x653A,0x6508,0x6539,0x648D,0x6184,0x6070,0x610E,0x610F,0x62BC,0x62BE,0x6364,0x6476]);
   }
 
   set hass(hass) {
@@ -55,10 +61,12 @@ class BroadlinkIRPanel extends HTMLElement {
   async _loadConfig() {
     try {
       this._config = await this._hass.connection.sendMessagePromise({ type: "broadlink_ir_receiver/get_config" });
-      if (!this._config || !this._config.remotes) this._config = { remotes: [{ id: "r1", name: "Remote 1", mappings: [] }], sel: "r1" };
+      if (!this._config || !this._config.devices) {
+        this._config = { version: 2, devices: {} };
+      }
     } catch (e) {
       console.error("IR: load config failed", e);
-      this._config = { remotes: [{ id: "r1", name: "Remote 1", mappings: [] }], sel: "r1" };
+      this._config = { version: 2, devices: {} };
     }
   }
 
@@ -86,7 +94,11 @@ class BroadlinkIRPanel extends HTMLElement {
   // --- helpers ---
   _esc(s) { if (s == null) return ""; const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
   _$(id) { return this.shadowRoot.getElementById(id); }
-  _curRemote() { return this._config.remotes.find(r => r.id === this._config.sel) || this._config.remotes[0]; }
+  _deviceConfig() {
+    if (!this._activeEntry || !this._config.devices) return { remotes: [{ id: "r1", name: "Remote 1", mappings: [] }], sel: "r1" };
+    return this._config.devices[this._activeEntry] || { remotes: [{ id: "r1", name: "Remote 1", mappings: [] }], sel: "r1" };
+  }
+  _curRemote() { const dc = this._deviceConfig(); return dc.remotes.find(r => r.id === dc.sel) || dc.remotes[0]; }
   _curMaps() { return this._curRemote().mappings; }
   _mappedBtn(id) { return this._curMaps().find(m => m.button === id); }
   _label(id) { return id.toUpperCase().replace("_", " "); }
@@ -108,8 +120,57 @@ class BroadlinkIRPanel extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise({ type: "broadlink_ir_receiver/toggle", entry_id: id, enabled: on });
       if (this._entries[id]) this._entries[id].enabled = on;
-      this._renderControls();
+      this._renderTopbar();
     } catch (e) { console.error("IR: toggle failed", e); }
+  }
+
+  // --- add/remove device ---
+  async _addDevice() {
+    const host = this._$("addDevHost").value.trim();
+    const name = this._$("addDevName").value.trim();
+    if (!host) { this._toast("Enter an IP address"); return; }
+    this._$("addDevGo").textContent = "Adding...";
+    this._$("addDevGo").disabled = true;
+    try {
+      const r = await this._hass.connection.sendMessagePromise({
+        type: "broadlink_ir_receiver/add_device",
+        host,
+        name: name || undefined,
+      });
+      this._toast("Device added!");
+      this._$("addDevForm").style.display = "none";
+      this._$("addDevBtn").style.display = "flex";
+      this._$("addDevHost").value = "";
+      this._$("addDevName").value = "";
+      await this._loadState();
+      this._activeEntry = r.entry_id;
+      await this._loadConfig();
+      this._renderAll();
+    } catch (e) {
+      this._toast("Failed: " + (e.message || "check IP"));
+    } finally {
+      const btn = this._$("addDevGo");
+      if (btn) { btn.textContent = "Add"; btn.disabled = false; }
+    }
+  }
+
+  async _removeDevice(entryId) {
+    try {
+      await this._hass.connection.sendMessagePromise({
+        type: "broadlink_ir_receiver/remove_device",
+        entry_id: entryId,
+      });
+      delete this._entries[entryId];
+      if (this._activeEntry === entryId) {
+        const ids = Object.keys(this._entries);
+        this._activeEntry = ids[0] || null;
+      }
+      await this._loadConfig();
+      this._renderAll();
+      this._toast("Device removed");
+    } catch (e) {
+      this._toast("Failed: " + (e.message || "unknown error"));
+    }
   }
 
   // --- buttons layout ---
@@ -127,13 +188,23 @@ class BroadlinkIRPanel extends HTMLElement {
     ];
   }
 
-  // --- IR capture (real) ---
+  // --- IR/RF capture ---
   async _startCapture() {
     this._wiz.capturing = true;
     this._wiz.ir_code = null;
+    this._wiz.captureError = null;
+    this._wiz.captureMode = this._wiz.captureMode || "ir";
     this._renderWizard();
+
+    if (this._wiz.captureMode === "rf") {
+      this._startRfCapture();
+      return;
+    }
+
+    const activeHost = this._entries[this._activeEntry]?.host;
     try {
       this._captureSub = await this._hass.connection.subscribeEvents((ev) => {
+        if (activeHost && ev.data.host !== activeHost) return;
         const code = ev.data.nec_code || (ev.data.raw_hex || "").substring(0, 16);
         if (!code) return;
         this._wiz.ir_code = code;
@@ -144,6 +215,23 @@ class BroadlinkIRPanel extends HTMLElement {
     } catch (e) {
       console.error("IR: capture sub failed", e);
       this._wiz.capturing = false;
+      this._renderWizard();
+    }
+  }
+
+  async _startRfCapture() {
+    try {
+      const r = await this._hass.connection.sendMessagePromise({
+        type: "broadlink_ir_receiver/start_rf_capture",
+        entry_id: this._activeEntry,
+      });
+      this._wiz.ir_code = r.rf_code || r.raw_hex?.substring(0, 16);
+      this._wiz.capturing = false;
+      this._renderWizard();
+    } catch (e) {
+      console.error("RF: capture failed", e);
+      this._wiz.capturing = false;
+      this._wiz.captureError = e.message || "RF capture failed";
       this._renderWizard();
     }
   }
@@ -166,6 +254,28 @@ class BroadlinkIRPanel extends HTMLElement {
       .panel{background:var(--card-background-color,#1c2025);border:1px solid var(--divider-color,#313742);border-radius:12px;padding:18px}
       .panel h2{font-size:14px;font-weight:500;margin:0 0 14px;color:var(--secondary-text-color,#9aa3ad);text-transform:uppercase;letter-spacing:.5px}
       .mono{font-family:"Roboto Mono",monospace}
+
+      .topbar{display:flex;gap:10px;margin-bottom:18px;padding:12px 16px;background:var(--card-background-color,#1c2025);border:1px solid var(--divider-color,#313742);border-radius:12px;flex-wrap:wrap;align-items:center;max-width:1320px}
+      .dev-chip{display:flex;align-items:center;gap:8px;background:var(--card-background-color,#232830);border:1px solid var(--divider-color,#313742);border-radius:8px;padding:10px 14px;cursor:pointer;min-width:180px;transition:.15s}
+      .dev-chip:hover{border-color:var(--primary-color,#03a9f4)}
+      .dev-chip.active{border-color:var(--primary-color,#03a9f4);box-shadow:0 0 0 1px var(--primary-color,#03a9f4)}
+      .dev-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+      .dev-dot.on{background:#4caf50}
+      .dev-dot.off{background:#f44336}
+      .dev-name{font-size:13px;font-weight:500}
+      .dev-meta{font-size:10px;color:var(--secondary-text-color,#9aa3ad)}
+      .add-dev-btn{display:flex;align-items:center;gap:6px;background:transparent;border:1px dashed var(--divider-color,#555);border-radius:8px;padding:10px 16px;font-size:13px;color:var(--primary-color,#03a9f4);cursor:pointer}
+      .add-dev-btn:hover{border-color:var(--primary-color,#03a9f4)}
+      .add-form{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+      .add-form input{background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);border:1px solid var(--divider-color,#313742);border-radius:8px;padding:8px 10px;font-size:13px;width:140px}
+      .add-form .btn{flex:none;padding:8px 16px}
+      .dev-menu{position:relative;display:inline-block}
+      .dev-menu-btn{background:none;border:none;color:var(--secondary-text-color,#9aa3ad);cursor:pointer;font-size:16px;padding:2px 6px}
+      .dev-menu-drop{position:absolute;right:0;top:100%;background:var(--card-background-color,#232830);border:1px solid var(--divider-color,#313742);border-radius:8px;padding:4px 0;z-index:10;min-width:120px;display:none}
+      .dev-menu-drop.open{display:block}
+      .dev-menu-drop button{display:block;width:100%;text-align:left;background:none;border:none;color:var(--primary-text-color,#e4e7eb);padding:8px 14px;font-size:12px;cursor:pointer}
+      .dev-menu-drop button:hover{background:rgba(255,255,255,.05)}
+      .dev-menu-drop button.danger{color:#f44336}
 
       .remote-pick{display:flex;gap:8px;margin-bottom:16px}
       .remote-pick select{flex:1;background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);border:1px solid var(--divider-color,#313742);border-radius:8px;padding:8px}
@@ -201,22 +311,14 @@ class BroadlinkIRPanel extends HTMLElement {
       .chip:hover{border-color:var(--primary-color,#03a9f4);color:var(--primary-text-color,#e4e7eb)}
       .cont .note{font-size:11px;color:var(--secondary-text-color,#9aa3ad);text-align:center;margin-top:8px}
 
-      .controls{display:flex;gap:12px;margin-bottom:16px}
-      .ctl{flex:1;display:flex;align-items:center;justify-content:space-between;gap:10px;
-        background:var(--card-background-color,#232830);border:1px solid var(--divider-color,#313742);border-radius:10px;padding:10px 14px}
-      .ctl .cname{font-size:13px}
-      .ctl .cstate{font-size:11px;color:var(--secondary-text-color,#9aa3ad)}
-      .sw{width:44px;height:24px;border-radius:12px;background:#444;position:relative;cursor:pointer;transition:.15s;flex:none}
-      .sw::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;transition:.15s}
-      .sw.on{background:var(--primary-color,#03a9f4)}
-      .sw.on::after{left:22px}
-
       .map-empty{color:var(--secondary-text-color,#9aa3ad);text-align:center;padding:26px 10px;font-size:14px}
       table{width:100%;border-collapse:collapse;font-size:13px}
       th{text-align:left;color:var(--secondary-text-color,#9aa3ad);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.4px;padding:8px;border-bottom:1px solid var(--divider-color,#313742)}
       td{padding:10px 8px;border-bottom:1px solid #262b32}
       .badge{font-size:11px;padding:2px 7px;border-radius:4px;background:#1b3a4a;color:#8fd3f0}
       .badge.nec{background:#1b5e20;color:#a5d6a7}
+      .badge.ir{background:#1b5e20;color:#a5d6a7}
+      .badge.rf{background:#1a237e;color:#9fa8da}
       .lk{color:var(--primary-color,#03a9f4);cursor:pointer}.lk:hover{text-decoration:underline}
       .lk.del{color:#f44336}
       .steps{display:flex;gap:6px;margin-bottom:18px}
@@ -241,14 +343,14 @@ class BroadlinkIRPanel extends HTMLElement {
       .btn.ghost{background:transparent;border:1px solid var(--divider-color,#313742);color:var(--secondary-text-color,#9aa3ad)}.btn.ghost:hover{color:var(--primary-text-color,#e4e7eb)}
 
       .log-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:8px}
-      .log-actions{display:flex;gap:6px}
+      .log-actions{display:flex;gap:6px;align-items:center}
       .sbtn{background:var(--primary-color,#03a9f4);color:#fff;border:none;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer}
       .sbtn.ghost{background:transparent;border:1px solid var(--divider-color,#313742);color:var(--secondary-text-color,#9aa3ad)}
       .sbtn:hover{opacity:.9}
       .logrow{padding:9px 4px;border-bottom:1px solid #262b32}
       .logrow.new{animation:flashrow 1s ease-out}
       @keyframes flashrow{0%{background:rgba(3,169,244,.18)}100%{background:transparent}}
-      .lr-top{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--secondary-text-color,#9aa3ad)}
+      .lr-top{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--secondary-text-color,#9aa3ad)}
       .lr-code{font-size:15px;margin:3px 0;color:var(--primary-color,#03a9f4)}
       .lr-match{font-size:12px}
       .log-scroll{max-height:560px;overflow-y:auto}
@@ -258,10 +360,11 @@ class BroadlinkIRPanel extends HTMLElement {
     `;
     this.shadowRoot.innerHTML = `<style>${S}</style>
       <div class="header"><h1>IR Remote &amp; Automation Wizard</h1></div>
+      <div class="topbar" id="topbar"></div>
       <div class="layout">
         <div class="panel"><div class="remote-pick"><select id="remoteSel"></select><button class="iconbtn" id="newRemote" title="New remote">＋</button><button class="iconbtn danger" id="delRemote" title="Delete remote">🗑</button></div><h2 id="remoteTitle">Remote</h2><div class="remote"><div id="remoteGrid"></div><div class="cont"><div class="lbl"><span>Continuous control</span></div><div class="readout" id="cVal">30%</div><input type="range" id="cSlider" min="0" max="100" value="30"><div class="rocker"><button class="key" id="cMinus">– hold</button><button class="key" id="cPlus">+ hold</button></div><div class="presets"><button class="chip" data-p="20">20%</button><button class="chip" data-p="30">30%</button><button class="chip" data-p="50">50%</button></div><div class="note">Hold –/+ to ramp. UX for step-mode mappings.</div></div></div></div>
-        <div><div class="controls" id="controls"></div><div class="panel" id="middle"></div></div>
-        <div class="panel"><div class="log-hdr"><h2 style="margin:0">Live IR Log</h2><div class="log-actions"><button class="sbtn ghost" id="clearLog">Clear</button></div></div><div class="log-scroll" id="log"></div></div>
+        <div><div class="panel" id="middle"></div></div>
+        <div class="panel"><div class="log-hdr"><h2 style="margin:0">Live IR/RF Log</h2><div class="log-actions"><select id="logFilter" style="background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);border:1px solid var(--divider-color,#313742);border-radius:6px;padding:4px 8px;font-size:11px"><option value="">All devices</option></select><button class="sbtn ghost" id="clearLog">Clear</button></div></div><div class="log-scroll" id="log"></div></div>
       </div>
       <div id="toast"></div>`;
     this._bindShell();
@@ -269,26 +372,29 @@ class BroadlinkIRPanel extends HTMLElement {
 
   _bindShell() {
     this._$("newRemote").addEventListener("click", () => {
-      const name = prompt("New remote name:", "Remote " + (this._config.remotes.length + 1));
+      const dc = this._deviceConfig();
+      const name = prompt("New remote name:", "Remote " + (dc.remotes.length + 1));
       if (!name) return;
       const id = "r" + Date.now();
-      this._config.remotes.push({ id, name, mappings: [] });
-      this._config.sel = id;
+      dc.remotes.push({ id, name, mappings: [] });
+      dc.sel = id;
       this._wiz = null;
       this._saveConfig();
       this._renderAll();
     });
     this._$("delRemote").addEventListener("click", () => {
-      if (this._config.remotes.length <= 1) { this._toast("Keep at least one remote"); return; }
+      const dc = this._deviceConfig();
+      if (dc.remotes.length <= 1) { this._toast("Keep at least one remote"); return; }
       if (!confirm('Delete remote "' + this._curRemote().name + '" and its mappings?')) return;
-      this._config.remotes = this._config.remotes.filter(r => r.id !== this._config.sel);
-      this._config.sel = this._config.remotes[0].id;
+      dc.remotes = dc.remotes.filter(r => r.id !== dc.sel);
+      dc.sel = dc.remotes[0].id;
       this._wiz = null;
       this._saveConfig();
       this._renderAll();
     });
     this._$("remoteSel").addEventListener("change", (e) => {
-      this._config.sel = e.target.value;
+      const dc = this._deviceConfig();
+      dc.sel = e.target.value;
       this._wiz = null;
       this._saveConfig();
       this._renderAll();
@@ -320,51 +426,116 @@ class BroadlinkIRPanel extends HTMLElement {
 
   // --- render all ---
   _renderAll() {
+    if (!this._activeEntry) {
+      const ids = Object.keys(this._entries);
+      this._activeEntry = ids[0] || null;
+    }
+    this._renderTopbar();
     this._renderSelector();
-    this._renderControls();
     this._renderRemote();
     this._renderMiddle();
     this._renderLog(false);
+    this._renderLogFilter();
+  }
+
+  _renderTopbar() {
+    const el = this._$("topbar");
+    if (!el) return;
+    const ids = Object.keys(this._entries);
+    const isRF = dt => BroadlinkIRPanel.RF_DEVTYPES.has(dt);
+
+    let html = ids.map(id => {
+      const e = this._entries[id];
+      const active = id === this._activeEntry;
+      const typeBadge = isRF(e.dev_type)
+        ? '<span class="badge rf" style="font-size:9px;padding:1px 5px">IR+RF</span>'
+        : '<span class="badge ir" style="font-size:9px;padding:1px 5px">IR</span>';
+      return `<div class="dev-chip ${active ? "active" : ""}" data-eid="${id}">
+        <div class="dev-dot ${e.enabled ? "on" : "off"}"></div>
+        <div style="flex:1">
+          <div class="dev-name">${this._esc(e.name)}</div>
+          <div class="dev-meta">${this._esc(e.host)} · ${typeBadge}</div>
+        </div>
+        <div class="dev-menu">
+          <button class="dev-menu-btn" data-menu="${id}">⋮</button>
+          <div class="dev-menu-drop" id="menu-${id}">
+            <button data-toggle="${id}">${e.enabled ? "Turn off" : "Turn on"}</button>
+            <button class="danger" data-remove="${id}">Remove device</button>
+          </div>
+        </div>
+      </div>`;
+    }).join("");
+
+    html += `<div class="add-dev-btn" id="addDevBtn">＋ Add Device</div>`;
+    html += `<div class="add-form" id="addDevForm" style="display:none">
+      <input id="addDevHost" placeholder="IP address" />
+      <input id="addDevName" placeholder="Name (optional)" />
+      <button class="btn primary" id="addDevGo">Add</button>
+      <button class="btn ghost" id="addDevCancel">Cancel</button>
+    </div>`;
+
+    el.innerHTML = html;
+
+    el.querySelectorAll(".dev-chip").forEach(chip => {
+      chip.addEventListener("click", (ev) => {
+        if (ev.target.closest(".dev-menu")) return;
+        this._activeEntry = chip.dataset.eid;
+        this._renderAll();
+      });
+    });
+
+    el.querySelectorAll(".dev-menu-btn").forEach(btn => {
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const drop = this._$("menu-" + btn.dataset.menu);
+        if (drop) drop.classList.toggle("open");
+      });
+    });
+
+    el.querySelectorAll("[data-toggle]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.toggle;
+        const on = !(this._entries[id]?.enabled);
+        this._toggleEntry(id, on);
+      });
+    });
+
+    el.querySelectorAll("[data-remove]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.remove;
+        const name = this._entries[id]?.name || id;
+        if (!confirm(`Remove device "${name}"? Its mappings will also be deleted.`)) return;
+        this._removeDevice(id);
+      });
+    });
+
+    const addBtn = this._$("addDevBtn");
+    if (addBtn) {
+      addBtn.addEventListener("click", () => {
+        this._$("addDevBtn").style.display = "none";
+        this._$("addDevForm").style.display = "flex";
+        this._$("addDevHost").focus();
+      });
+    }
+    const cancelBtn = this._$("addDevCancel");
+    if (cancelBtn) {
+      cancelBtn.addEventListener("click", () => {
+        this._$("addDevForm").style.display = "none";
+        this._$("addDevBtn").style.display = "flex";
+      });
+    }
+    const goBtn = this._$("addDevGo");
+    if (goBtn) {
+      goBtn.addEventListener("click", () => this._addDevice());
+    }
   }
 
   _renderSelector() {
     const sel = this._$("remoteSel");
-    sel.innerHTML = this._config.remotes.map(r =>
-      `<option value="${r.id}" ${r.id === this._config.sel ? "selected" : ""}>${this._esc(r.name)} (${r.mappings.length})</option>`
+    const dc = this._deviceConfig();
+    sel.innerHTML = dc.remotes.map(r =>
+      `<option value="${r.id}" ${r.id === dc.sel ? "selected" : ""}>${this._esc(r.name)} (${r.mappings.length})</option>`
     ).join("");
-  }
-
-  _renderControls() {
-    const el = this._$("controls");
-    const ids = Object.keys(this._entries);
-    let html = "";
-    for (const id of ids) {
-      const e = this._entries[id];
-      html += `<div class="ctl"><div><div class="cname">${this._esc(e.name)}</div><div class="cstate">${e.enabled ? "Listening" : "Off"}</div></div><div class="sw ${e.enabled ? "on" : ""}" data-eid="${id}"></div></div>`;
-    }
-    // notifications switch — check entity state
-    const ntEntity = Object.values(this._hass.states || {}).find(s => s.entity_id.endsWith("_notifications"));
-    if (ntEntity) {
-      const ntOn = ntEntity.state === "on";
-      html += `<div class="ctl"><div><div class="cname">Notifications</div><div class="cstate">${ntOn ? "On" : "Off"}</div></div><div class="sw ${ntOn ? "on" : ""}" data-ntid="${ntEntity.entity_id}"></div></div>`;
-    }
-    el.innerHTML = html;
-    el.querySelectorAll(".sw[data-eid]").forEach(sw => {
-      sw.addEventListener("click", () => {
-        const on = !sw.classList.contains("on");
-        this._toggleEntry(sw.dataset.eid, on);
-      });
-    });
-    el.querySelectorAll(".sw[data-ntid]").forEach(sw => {
-      sw.addEventListener("click", () => {
-        const on = !sw.classList.contains("on");
-        const svc = on ? "switch.turn_on" : "switch.turn_off";
-        const [domain, s] = svc.split(".");
-        this._hass.callService(domain, s, { entity_id: sw.dataset.ntid });
-        sw.classList.toggle("on", on);
-        sw.closest(".ctl").querySelector(".cstate").textContent = on ? "On" : "Off";
-      });
-    });
   }
 
   _renderRemote() {
@@ -443,8 +614,9 @@ class BroadlinkIRPanel extends HTMLElement {
   _startWizard(b, existing) {
     this._cancelCapture();
     this._wiz = existing
-      ? Object.assign({ step: 2, button: b.id, capturing: false }, existing)
+      ? Object.assign({ step: 2, button: b.id, capturing: false, captureMode: "ir", captureError: null }, existing)
       : { step: 1, button: b.id, capturing: true, ir_code: null, mode: "service",
+          captureMode: "ir", captureError: null,
           service: this._services.find(s => s === "light.toggle") || this._services[0] || "light.toggle",
           target: this._entities.find(s => s.startsWith("light.")) || this._entities[0] || "",
           value: 30, stepPct: 10, data: "", name: "IR " + b.id.replace("_", " ") };
@@ -469,12 +641,26 @@ class BroadlinkIRPanel extends HTMLElement {
 
   _stepCapture() {
     const w = this._wiz;
-    if (w.capturing) return `<div class="capture-box"><div class="pulse">📡</div>
-      <div style="font-size:16px">Now receiving…</div>
-      <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">Press the <b>${this._esc(this._label(w.button))}</b> button on your physical remote</div></div>
+    const devType = this._entries[this._activeEntry]?.dev_type || 0;
+    const isRF = BroadlinkIRPanel.RF_DEVTYPES.has(devType);
+    const modeToggle = isRF ? `<div class="mode-tabs" style="margin-bottom:14px">
+      <div class="mode-tab ${(w.captureMode||"ir") === "ir" ? "on" : ""}" data-cap="ir">IR</div>
+      <div class="mode-tab ${w.captureMode === "rf" ? "on" : ""}" data-cap="rf">RF</div>
+    </div>` : "";
+
+    if (w.capturing) return `${modeToggle}<div class="capture-box"><div class="pulse">${w.captureMode === "rf" ? "📻" : "📡"}</div>
+      <div style="font-size:16px">Now receiving ${w.captureMode === "rf" ? "RF" : "IR"}…</div>
+      <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">Press the <b>${this._esc(this._label(w.button))}</b> button on your physical remote</div>
+      ${w.captureMode === "rf" ? '<div style="color:var(--secondary-text-color);font-size:11px;margin-top:8px">Hold the button for 2-3 seconds during frequency scan, then press again when prompted.</div>' : ""}</div>
       <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button></div>`;
-    return `<div class="capture-box"><div style="color:var(--secondary-text-color);font-size:13px">Captured IR code</div>
-      <div class="code-result">${this._esc(w.ir_code)}</div><div style="color:var(--secondary-text-color);font-size:12px">protocol: NEC</div></div>
+
+    if (w.captureError) return `${modeToggle}<div class="capture-box"><div style="color:#f44336;font-size:16px">Capture failed</div>
+      <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">${this._esc(w.captureError)}</div></div>
+      <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button><button class="btn primary" id="wzRetry">Retry</button></div>`;
+
+    const proto = w.captureMode === "rf" ? "RF" : "NEC";
+    return `${modeToggle}<div class="capture-box"><div style="color:var(--secondary-text-color);font-size:13px">Captured ${w.captureMode === "rf" ? "RF" : "IR"} code</div>
+      <div class="code-result">${this._esc(w.ir_code)}</div><div style="color:var(--secondary-text-color);font-size:12px">protocol: ${proto}</div></div>
       <div class="row-btns"><button class="btn ghost" id="wzRetry">Retry</button><button class="btn primary" id="wzNext">Next →</button></div>`;
   }
 
@@ -509,7 +695,7 @@ class BroadlinkIRPanel extends HTMLElement {
     const w = this._wiz;
     return `<div class="field"><label>Mapping name</label><input type="text" id="wzName" value="${this._esc(w.name)}"></div>
       <div class="field"><label>Action preview</label><div class="preview" id="wzYaml">${this._esc(this._previewText())}</div></div>
-      <div style="font-size:11px;color:var(--secondary-text-color);margin-bottom:6px"><b>Save</b> stores this mapping. The integration executes the service call automatically whenever this IR code is received — no separate automation needed.</div>
+      <div style="font-size:11px;color:var(--secondary-text-color);margin-bottom:6px"><b>Save</b> stores this mapping. The integration executes the service call automatically whenever this IR/RF code is received — no separate automation needed.</div>
       <div class="row-btns"><button class="btn ghost" id="wzBack2">← Back</button><button class="btn primary" id="wzSave">Save mapping</button></div>`;
   }
 
@@ -534,14 +720,22 @@ class BroadlinkIRPanel extends HTMLElement {
       const cancel = this._$("wzCancel");
       if (cancel) cancel.addEventListener("click", () => { this._cancelCapture(); this._wiz = null; this._renderAll(); });
       const retry = this._$("wzRetry");
-      if (retry) retry.addEventListener("click", () => { w.step = 1; this._startCapture(); });
+      if (retry) retry.addEventListener("click", () => { w.step = 1; w.captureError = null; this._startCapture(); });
       const next = this._$("wzNext");
       if (next) next.addEventListener("click", () => { w.step = 2; this._renderWizard(); });
+      this.shadowRoot.querySelectorAll("[data-cap]").forEach(t => t.addEventListener("click", () => {
+        w.captureMode = t.dataset.cap;
+        w.captureError = null;
+        this._cancelCapture();
+        this._startCapture();
+      }));
     } else if (w.step === 2) {
       this.shadowRoot.querySelectorAll(".mode-tab").forEach(t => t.addEventListener("click", () => {
-        w.mode = t.dataset.mode;
-        if (w.mode !== "service" && !/set_cover_position|turn_on/.test(w.service)) w.service = this._services.find(s => /turn_on/.test(s)) || w.service;
-        this._renderWizard();
+        if (t.dataset.mode) {
+          w.mode = t.dataset.mode;
+          if (w.mode !== "service" && !/set_cover_position|turn_on/.test(w.service)) w.service = this._services.find(s => /turn_on/.test(s)) || w.service;
+          this._renderWizard();
+        }
       }));
       const sync = () => {
         const svc = this._$("wzService"); if (svc) w.service = svc.value;
@@ -585,20 +779,43 @@ class BroadlinkIRPanel extends HTMLElement {
   }
 
   // --- log ---
+  _renderLogFilter() {
+    const sel = this._$("logFilter");
+    if (!sel) return;
+    let html = '<option value="">All devices</option>';
+    for (const [id, e] of Object.entries(this._entries)) {
+      html += `<option value="${id}" ${this._logFilter === id ? "selected" : ""}>${this._esc(e.name)}</option>`;
+    }
+    sel.innerHTML = html;
+    sel.onchange = () => {
+      this._logFilter = sel.value || null;
+      this._renderLog(false);
+    };
+  }
+
   _renderLog(flashFirst) {
     const el = this._$("log");
     if (!el) return;
-    if (!this._codes.length) {
-      el.innerHTML = `<div class="map-empty">No IR received yet.<br>Press a button on your physical remote.</div>`;
+
+    let codes = this._codes;
+    if (this._logFilter) {
+      const filterHost = this._entries[this._logFilter]?.host;
+      if (filterHost) codes = codes.filter(c => c.host === filterHost);
+    }
+
+    if (!codes.length) {
+      el.innerHTML = `<div class="map-empty">No IR/RF received yet.<br>Press a button on your physical remote.</div>`;
       return;
     }
-    el.innerHTML = this._codes.map((c, i) => {
+    el.innerHTML = codes.map((c, i) => {
       const code = c.nec_code || (c.raw_hex || "").substring(0, 16) || "-";
       const proto = c.protocol || "Unknown";
       const t = this._fmtTime(c.timestamp);
+      const devName = c.device || c.host || "?";
       const m = this._curMaps().find(x => x.ir_code === code);
+      const protoCls = proto === "NEC" ? "nec" : proto === "RF" ? "rf" : "";
       return `<div class="logrow ${flashFirst && i === 0 ? "new" : ""}">
-        <div class="lr-top"><span>${t}</span><span class="badge ${proto === "NEC" ? "nec" : ""}">${this._esc(proto)}</span></div>
+        <div class="lr-top"><span>${t}</span><span style="font-size:11px;font-weight:500;color:var(--primary-color,#03a9f4)">${this._esc(devName)}</span><span class="badge ${protoCls}">${this._esc(proto)}</span></div>
         <div class="lr-code mono">${this._esc(code)}</div>
         <div class="lr-match ${m ? "match" : "nomatch"}">${m ? "→ " + this._esc(this._label(m.button)) + " · " + this._esc(this._curRemote().name) : "unmapped"}</div>
       </div>`;

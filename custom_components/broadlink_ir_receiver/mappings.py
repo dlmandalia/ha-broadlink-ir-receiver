@@ -1,4 +1,4 @@
-"""Mappings engine — stores IR-to-action mappings and executes them on match."""
+"""Mappings engine — stores per-device IR/RF-to-action mappings and executes on match."""
 
 import logging
 
@@ -17,10 +17,23 @@ STORE_VERSION = 1
 
 
 def default_data():
-    return {
-        "remotes": [{"id": "r1", "name": "Remote 1", "mappings": []}],
-        "sel": "r1",
-    }
+    return {"version": 2, "devices": {}}
+
+
+def _migrate_v1(data: dict, first_entry_id: str | None) -> dict:
+    if data.get("version") == 2:
+        return data
+    if "remotes" in data and first_entry_id:
+        return {
+            "version": 2,
+            "devices": {
+                first_entry_id: {
+                    "remotes": data["remotes"],
+                    "sel": data.get("sel", "r1"),
+                }
+            },
+        }
+    return default_data()
 
 
 class MappingsStore:
@@ -31,9 +44,15 @@ class MappingsStore:
         self._data: dict | None = None
         self._unsub = None
 
-    async def async_load(self) -> None:
-        self._data = await self._store.async_load() or default_data()
-        if not self._data.get("remotes"):
+    async def async_load(self, first_entry_id: str | None = None) -> None:
+        raw = await self._store.async_load()
+        if raw is None:
+            self._data = default_data()
+        else:
+            self._data = _migrate_v1(raw, first_entry_id)
+            if raw != self._data:
+                await self.async_save()
+        if "devices" not in self._data:
             self._data = default_data()
 
     async def async_save(self) -> None:
@@ -47,27 +66,49 @@ class MappingsStore:
         self._data = data
         await self.async_save()
 
+    def ensure_device(self, entry_id: str) -> None:
+        if entry_id not in self._data.get("devices", {}):
+            self._data.setdefault("devices", {})[entry_id] = {
+                "remotes": [{"id": "r1", "name": "Remote 1", "mappings": []}],
+                "sel": "r1",
+            }
+
+    def remove_device(self, entry_id: str) -> None:
+        self._data.get("devices", {}).pop(entry_id, None)
+
     def start_executor(self) -> None:
         @callback
         def _handle_ir(event):
             code = event.data.get("nec_code") or event.data.get("raw_hex", "")[:16]
             host = event.data.get("host")
-            if not code:
+            if not code or not host:
                 return
-            for remote in self._data.get("remotes", []):
+            entry_id = self._find_entry_by_host(host)
+            if not entry_id:
+                return
+            device_data = self._data.get("devices", {}).get(entry_id, {})
+            for remote in device_data.get("remotes", []):
                 for m in remote.get("mappings", []):
                     if m.get("ir_code") != code:
                         continue
                     _LOGGER.info(
-                        "IR match: %s → %s on remote '%s'",
+                        "IR match: %s → %s on remote '%s' (device %s)",
                         code,
                         m.get("service"),
                         remote.get("name"),
+                        entry_id,
                     )
                     self._execute(m, host)
                     return
 
         self._unsub = self._hass.bus.async_listen(EVENT_IR_COMMAND, _handle_ir)
+
+    def _find_entry_by_host(self, host: str) -> str | None:
+        for entry_id, data in self._hass.data.get(DOMAIN, {}).items():
+            if isinstance(data, dict) and "listener" in data:
+                if data["listener"].host == host:
+                    return entry_id
+        return None
 
     def stop_executor(self) -> None:
         if self._unsub:

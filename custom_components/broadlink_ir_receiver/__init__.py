@@ -19,6 +19,7 @@ from .const import (
     EVENT_IR_COMMAND,
     MAX_CODE_HISTORY,
     PLATFORMS,
+    RF_CAPABLE_DEVTYPES,
 )
 from .mappings import MappingsStore, ws_get_config, ws_set_config
 
@@ -53,12 +54,13 @@ def decode_nec(data: bytes) -> str | None:
 class BroadlinkIRListener:
 
     def __init__(
-        self, hass: HomeAssistant, host: str, name: str, entry_id: str
+        self, hass: HomeAssistant, host: str, name: str, entry_id: str, dev_type: int = 0
     ) -> None:
         self._hass = hass
         self._host = host
         self._name = name
         self._entry_id = entry_id
+        self._dev_type = dev_type
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._dev = None
@@ -191,7 +193,12 @@ class BroadlinkIRListener:
                     learning = False
 
                     nec = decode_nec(data)
-                    protocol = "NEC" if nec else "Unknown"
+                    if nec:
+                        protocol = "NEC"
+                    elif self._dev_type in RF_CAPABLE_DEVTYPES and (len(data) < 6 or data[0] != 0x26):
+                        protocol = "RF"
+                    else:
+                        protocol = "Unknown"
                     code_key = nec or data[:8].hex()
 
                     now = time.monotonic()
@@ -239,6 +246,7 @@ async def ws_get_state(hass, connection, msg):
             "enabled": listener.enabled,
             "host": listener.host,
             "name": listener.name,
+            "dev_type": data.get("dev_type", 0),
             "codes": list(data.get("code_history", [])),
         }
     connection.send_result(msg["id"], {"entries": entries})
@@ -270,6 +278,143 @@ async def ws_clear_codes(hass, connection, msg):
         if isinstance(data, dict) and "code_history" in data:
             data["code_history"].clear()
     connection.send_result(msg["id"], {})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "broadlink_ir_receiver/add_device",
+        vol.Required("host"): str,
+        vol.Optional("name"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_add_device(hass, connection, msg):
+    host = msg["host"]
+    name = msg.get("name") or f"BroadLink {host}"
+
+    for eid, data in hass.data.get(DOMAIN, {}).items():
+        if isinstance(data, dict) and "listener" in data:
+            if data["listener"].host == host:
+                connection.send_error(msg["id"], "already_configured", f"Device at {host} already configured")
+                return
+
+    try:
+        devices = await hass.async_add_executor_job(broadlink.discover, 5, None, host)
+        if not devices:
+            connection.send_error(msg["id"], "cannot_connect", f"No device found at {host}")
+            return
+        dev = devices[0]
+        await hass.async_add_executor_job(dev.auth)
+    except Exception as exc:
+        connection.send_error(msg["id"], "cannot_connect", str(exc))
+        return
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "ws"},
+        data={
+            "host": host,
+            "name": name,
+            "dev_type": dev.devtype,
+            "mac": ":".join(f"{b:02x}" for b in dev.mac),
+        },
+    )
+
+    if result.get("type") == "create_entry":
+        connection.send_result(msg["id"], {
+            "success": True,
+            "entry_id": result["result"].entry_id,
+            "dev_type": dev.devtype,
+        })
+    else:
+        connection.send_error(msg["id"], "setup_failed", "Could not create config entry")
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "broadlink_ir_receiver/remove_device",
+        vol.Required("entry_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_remove_device(hass, connection, msg):
+    entry_id = msg["entry_id"]
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if not entry or entry.domain != DOMAIN:
+        connection.send_error(msg["id"], "not_found", "Config entry not found")
+        return
+
+    store = hass.data.get(DOMAIN, {}).get("_mappings_store")
+    if store:
+        store.remove_device(entry_id)
+        await store.async_save()
+
+    await hass.config_entries.async_remove(entry_id)
+    connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "broadlink_ir_receiver/start_rf_capture",
+        vol.Required("entry_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_start_rf_capture(hass, connection, msg):
+    entry_id = msg["entry_id"]
+    data = hass.data.get(DOMAIN, {}).get(entry_id)
+    if not data or "listener" not in data:
+        connection.send_error(msg["id"], "not_found", "Device not found")
+        return
+
+    dev_type = data.get("dev_type", 0)
+    if dev_type not in RF_CAPABLE_DEVTYPES:
+        connection.send_error(msg["id"], "not_supported", "Device does not support RF")
+        return
+
+    listener = data["listener"]
+    if not listener._dev:
+        connection.send_error(msg["id"], "not_connected", "Device not connected")
+        return
+
+    dev = listener._dev
+
+    def _rf_capture():
+        import time as _time
+
+        dev.sweep_frequency()
+        deadline = _time.monotonic() + 10
+        while _time.monotonic() < deadline:
+            _time.sleep(0.2)
+            if dev.check_frequency():
+                break
+        else:
+            return None, "Frequency scan timed out"
+
+        dev.find_rf_packet()
+        deadline = _time.monotonic() + 10
+        while _time.monotonic() < deadline:
+            _time.sleep(0.2)
+            try:
+                rf_data = dev.check_data()
+                if rf_data:
+                    return rf_data, None
+            except Exception:
+                continue
+        return None, "RF packet capture timed out"
+
+    try:
+        rf_data, error = await hass.async_add_executor_job(_rf_capture)
+    except Exception as exc:
+        connection.send_error(msg["id"], "rf_error", str(exc))
+        return
+
+    if error:
+        connection.send_error(msg["id"], "rf_timeout", error)
+        return
+
+    rf_hex = rf_data.hex() if rf_data else ""
+    connection.send_result(msg["id"], {"rf_code": rf_hex[:16] or rf_hex, "raw_hex": rf_hex})
 
 
 # ---------------------------------------------------------------------------
@@ -310,12 +455,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     host = entry.data[CONF_HOST]
     name = entry.data.get(CONF_NAME, f"BroadLink {host}")
+    dev_type = entry.data.get("dev_type", 0)
 
-    listener = BroadlinkIRListener(hass, host, name, entry.entry_id)
+    listener = BroadlinkIRListener(hass, host, name, entry.entry_id, dev_type)
 
     hass.data[DOMAIN][entry.entry_id] = {
         "listener": listener,
         "code_history": deque(maxlen=MAX_CODE_HISTORY),
+        "dev_type": dev_type,
     }
 
     await hass.async_add_executor_job(listener.start)
@@ -326,14 +473,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         websocket_api.async_register_command(hass, ws_clear_codes)
         websocket_api.async_register_command(hass, ws_get_config)
         websocket_api.async_register_command(hass, ws_set_config)
+        websocket_api.async_register_command(hass, ws_add_device)
+        websocket_api.async_register_command(hass, ws_remove_device)
+        websocket_api.async_register_command(hass, ws_start_rf_capture)
         await _register_panel(hass)
         hass.data[DOMAIN]["_panel_registered"] = True
 
     if "_mappings_store" not in hass.data[DOMAIN]:
         store = MappingsStore(hass)
-        await store.async_load()
+        await store.async_load(first_entry_id=entry.entry_id)
         store.start_executor()
         hass.data[DOMAIN]["_mappings_store"] = store
+
+    store = hass.data[DOMAIN]["_mappings_store"]
+    store.ensure_device(entry.entry_id)
+    await store.async_save()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

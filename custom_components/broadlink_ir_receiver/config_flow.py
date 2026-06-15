@@ -52,3 +52,26 @@ class BroadlinkIRReceiverConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ),
             errors=errors,
         )
+
+    async def async_step_ws(self, data=None):
+        if data is None:
+            return self.async_abort(reason="no_data")
+
+        host = data.get("host")
+        if not host:
+            return self.async_abort(reason="no_host")
+
+        for entry in self._async_current_entries():
+            if entry.data.get(CONF_HOST) == host:
+                return self.async_abort(reason="already_configured")
+
+        name = data.get("name", f"BroadLink {host}")
+        return self.async_create_entry(
+            title=name,
+            data={
+                CONF_HOST: host,
+                CONF_NAME: name,
+                "dev_type": data.get("dev_type", 0),
+                "mac": data.get("mac", ""),
+            },
+        )
