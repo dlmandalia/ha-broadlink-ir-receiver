@@ -122,8 +122,10 @@ class BroadlinkIRPanel extends HTMLElement {
   _findNotifEntity(entryId) { return this._findEntityByEntry(entryId, "_notifications_switch"); }
   _findReceiverEntity(entryId) { return this._findEntityByEntry(entryId, "_receiver_switch"); }
   _isNotifOn(entryId) {
-    const e = this._findNotifEntity(entryId);
-    return e ? e.state === "on" : false;
+    const reg = (this._entityRegistry || []).find(e => e.config_entry_id === entryId && e.unique_id && e.unique_id.endsWith("_notifications_switch"));
+    if (!reg) return false;
+    const s = this._hass?.states?.[reg.entity_id];
+    return s ? s.state === "on" : false;
   }
 
   _flashMatch(ev) {
@@ -384,7 +386,7 @@ class BroadlinkIRPanel extends HTMLElement {
       #toast.show{transform:translateX(-50%) translateY(0)}
     `;
     this.shadowRoot.innerHTML = `<style>${S}</style>
-      <div class="header"><h1>IR Remote &amp; Automation Wizard</h1></div>
+      <div class="header"><h1>IR Remote &amp; Automation Wizard</h1><span style="margin-left:auto;font-size:11px;color:var(--secondary-text-color,#9aa3ad)">v2.3.0</span></div>
       <div class="topbar" id="topbar"></div>
       <div class="layout">
         <div class="panel"><div class="remote-pick"><select id="remoteSel"></select><button class="iconbtn" id="newRemote" title="New remote">＋</button><button class="iconbtn danger" id="delRemote" title="Delete remote">🗑</button></div><h2 id="remoteTitle">Remote</h2><div class="remote"><div id="remoteGrid"></div><div class="cont"><div class="lbl"><span>Continuous control</span></div><div class="readout" id="cVal">30%</div><input type="range" id="cSlider" min="0" max="100" value="30"><div class="rocker"><button class="key" id="cMinus">– hold</button><button class="key" id="cPlus">+ hold</button></div><div class="presets"><button class="chip" data-p="20">20%</button><button class="chip" data-p="30">30%</button><button class="chip" data-p="50">50%</button></div><div class="note">Hold –/+ to ramp. UX for step-mode mappings.</div></div></div></div>
@@ -527,15 +529,21 @@ class BroadlinkIRPanel extends HTMLElement {
     });
 
     el.querySelectorAll("[data-notif]").forEach(btn => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         const id = btn.dataset.notif;
-        const entity = this._findNotifEntity(id);
-        if (!entity) { this._toast("Notifications entity not found"); return; }
-        const on = entity.state !== "on";
-        const [domain, svc] = (on ? "switch.turn_on" : "switch.turn_off").split(".");
-        this._hass.callService(domain, svc, { entity_id: entity.entity_id });
-        this._toast(on ? "Notifications on" : "Notifications off");
-        setTimeout(() => this._renderTopbar(), 500);
+        const reg = (this._entityRegistry || []).find(e => e.config_entry_id === id && e.unique_id && e.unique_id.endsWith("_notifications_switch"));
+        if (!reg) { this._toast("Notifications entity not found"); console.error("IR: no registry entry for", id, this._entityRegistry); return; }
+        const entityId = reg.entity_id;
+        const curState = this._hass?.states?.[entityId];
+        const turnOn = !curState || curState.state !== "on";
+        try {
+          await this._hass.callService("switch", turnOn ? "turn_on" : "turn_off", { entity_id: entityId });
+          this._toast(turnOn ? "Notifications on" : "Notifications off");
+          setTimeout(() => this._renderTopbar(), 500);
+        } catch (e) {
+          console.error("IR: notif toggle failed", e);
+          this._toast("Failed: " + (e.message || "unknown"));
+        }
       });
     });
 
