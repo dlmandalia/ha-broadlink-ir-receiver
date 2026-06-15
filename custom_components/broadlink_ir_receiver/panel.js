@@ -13,6 +13,7 @@ class BroadlinkIRPanel extends HTMLElement {
     this._captureSub = null;
     this._activeEntry = null;
     this._logFilter = null;
+    this._entityRegistry = [];
   }
 
   static get RF_DEVTYPES() {
@@ -36,7 +37,7 @@ class BroadlinkIRPanel extends HTMLElement {
 
   async _boot() {
     this._renderShell();
-    await Promise.all([this._loadState(), this._loadConfig(), this._loadHA()]);
+    await Promise.all([this._loadState(), this._loadConfig(), this._loadHA(), this._loadEntityRegistry()]);
     this._renderAll();
     try {
       this._unsub = await this._hass.connection.subscribeEvents((ev) => {
@@ -91,6 +92,13 @@ class BroadlinkIRPanel extends HTMLElement {
     } catch (e) { this._services = []; }
   }
 
+  async _loadEntityRegistry() {
+    try {
+      const r = await this._hass.connection.sendMessagePromise({ type: "config/entity_registry/list" });
+      this._entityRegistry = (r || []).filter(e => e.platform === "broadlink_ir_receiver");
+    } catch (e) { this._entityRegistry = []; }
+  }
+
   // --- helpers ---
   _esc(s) { if (s == null) return ""; const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
   _$(id) { return this.shadowRoot.getElementById(id); }
@@ -105,13 +113,14 @@ class BroadlinkIRPanel extends HTMLElement {
   _toast(m) { const t = this._$("toast"); if (!t) return; t.textContent = m; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1800); }
   _fmtTime(ts) { return new Date(ts * 1000).toLocaleTimeString(); }
 
-  _findNotifEntity(entryId) {
-    const states = this._hass?.states || {};
-    return Object.values(states).find(s =>
-      s.entity_id.startsWith("switch.") && s.entity_id.includes("notifications") &&
-      s.attributes?.friendly_name?.includes(this._entries[entryId]?.name?.trim())
-    );
+  _findEntityByEntry(entryId, suffix) {
+    if (!this._entityRegistry) return null;
+    const reg = this._entityRegistry.find(e => e.config_entry_id === entryId && e.unique_id?.endsWith(suffix));
+    if (!reg) return null;
+    return this._hass?.states?.[reg.entity_id] || null;
   }
+  _findNotifEntity(entryId) { return this._findEntityByEntry(entryId, "_notifications_switch"); }
+  _findReceiverEntity(entryId) { return this._findEntityByEntry(entryId, "_receiver_switch"); }
   _isNotifOn(entryId) {
     const e = this._findNotifEntity(entryId);
     return e ? e.state === "on" : false;
@@ -132,8 +141,12 @@ class BroadlinkIRPanel extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise({ type: "broadlink_ir_receiver/toggle", entry_id: id, enabled: on });
       if (this._entries[id]) this._entries[id].enabled = on;
+      this._toast(on ? "Receiver on" : "Receiver off");
       this._renderTopbar();
-    } catch (e) { console.error("IR: toggle failed", e); }
+    } catch (e) {
+      console.error("IR: toggle failed", e);
+      this._toast("Toggle failed: " + (e.message || "unknown"));
+    }
   }
 
   // --- add/remove device ---
