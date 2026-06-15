@@ -126,6 +126,7 @@ class MappingsStore:
             service_data["entity_id"] = target
 
         mode = mapping.get("mode", "service")
+        _LOGGER.warning("EXEC mode=%s service=%s target=%s mapping_keys=%s", mode, service, target, list(mapping.keys()))
         if mode == "level":
             key = "position" if "cover" in service else "brightness_pct"
             service_data[key] = int(mapping.get("value", 0))
@@ -154,6 +155,7 @@ class MappingsStore:
             if isinstance(extra, dict):
                 service_data.update(extra)
 
+        _LOGGER.warning("CALL %s.%s data=%s", domain, svc, service_data)
         self._hass.async_create_task(
             self._hass.services.async_call(domain, svc, service_data)
         )
