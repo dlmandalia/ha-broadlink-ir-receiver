@@ -650,10 +650,12 @@ class BroadlinkIRPanel extends HTMLElement {
 
   _summary(m) {
     const vk = s => s.includes("cover") ? "position" : "brightness_pct";
-    const sk = s => s.includes("cover") ? "position_step" : "brightness_step_pct";
     if (m.mode === "service") return m.service + " → " + (m.target || "—");
     if (m.mode === "level") return m.service + " " + vk(m.service) + "=" + m.value;
-    if (m.mode === "step") return m.service + " " + sk(m.service) + "=" + m.stepPct;
+    if (m.mode === "step") {
+      const dir = m.service?.includes("cover") ? (m.stepDir == -1 ? "↓" : "↑") : "";
+      return m.service + " step=" + dir + m.stepPct + "%";
+    }
     return "";
   }
 
@@ -666,7 +668,7 @@ class BroadlinkIRPanel extends HTMLElement {
           captureMode: "ir", captureError: null,
           service: this._services.find(s => s === "light.toggle") || this._services[0] || "light.toggle",
           target: this._entities.find(s => s.startsWith("light.")) || this._entities[0] || "",
-          value: 30, stepPct: 10, data: "", name: "IR " + b.id.replace("_", " ") };
+          value: 30, stepPct: 10, stepDir: 1, data: "", name: "IR " + b.id.replace("_", " ") };
     if (this._wiz.step === undefined) this._wiz.step = 1;
     this._renderRemote();
     this._renderWizard();
@@ -721,16 +723,19 @@ class BroadlinkIRPanel extends HTMLElement {
         selField("Target entity", "wzTarget", this._entities, w.target) +
         `<div class="field"><label>Extra data (JSON, optional)</label><textarea id="wzData" placeholder='{ "brightness_pct": 80 }'>${this._esc(w.data)}</textarea></div>`;
     } else if (w.mode === "level") {
-      const lvlSvc = this._services.filter(s => /set_cover_position|turn_on/.test(s));
+      const lvlSvc = this._services.filter(s => /cover\.|light\.turn_on/.test(s));
       fields = selField("Service", "wzService", lvlSvc, w.service) +
         selField("Target entity", "wzTarget", this._entities, w.target) +
         `<div class="field"><label>Level: <b id="wzValLbl">${w.value}%</b></label><input type="range" id="wzValue" min="0" max="100" value="${w.value}"></div>`;
     } else {
-      const stepSvc = this._services.filter(s => /set_cover_position|turn_on/.test(s));
+      const stepSvc = this._services.filter(s => /cover\.|light\.turn_on/.test(s));
+      if (!w.stepDir) w.stepDir = 1;
+      const isCover = (w.service || "").includes("cover");
+      const dirHtml = isCover ? `<div class="field"><label>Direction</label><select id="wzStepDir"><option value="1" ${w.stepDir == 1 ? "selected" : ""}>↑ Open (increase)</option><option value="-1" ${w.stepDir == -1 ? "selected" : ""}>↓ Close (decrease)</option></select></div>` : "";
       fields = selField("Service", "wzService", stepSvc, w.service) +
-        selField("Target entity", "wzTarget", this._entities, w.target) +
+        selField("Target entity", "wzTarget", this._entities, w.target) + dirHtml +
         `<div class="field"><label>Step per press: <b id="wzStepLbl">${w.stepPct}%</b></label><input type="range" id="wzStep" min="5" max="50" step="5" value="${w.stepPct}"></div>
-        <div style="font-size:11px;color:var(--secondary-text-color)">Holding the IR button repeats → ramps by this step.</div>`;
+        <div style="font-size:11px;color:var(--secondary-text-color)">Each IR press moves by this step${isCover ? " (reads current position)" : ""}.</div>`;
     }
     return `<div class="wz-title">What should <span class="mono" style="color:var(--primary-color,#03a9f4)">${this._esc(w.ir_code)}</span> do?</div>
       <div class="mode-tabs">${tab("service", "Service call")}${tab("level", "Set level")}${tab("step", "Step level")}</div>${fields}
@@ -753,8 +758,11 @@ class BroadlinkIRPanel extends HTMLElement {
       const k = w.service.includes("cover") ? "position" : "brightness_pct";
       s += "\ndata:\n  " + k + ": " + w.value;
     } else if (w.mode === "step") {
-      const k = w.service.includes("cover") ? "position_step" : "brightness_step_pct";
-      s += "\ndata:\n  " + k + ": " + w.stepPct;
+      if (w.service.includes("cover")) {
+        s += "\ndata:\n  position: current " + (w.stepDir == -1 ? "- " : "+ ") + w.stepPct;
+      } else {
+        s += "\ndata:\n  brightness_step_pct: " + w.stepPct;
+      }
     } else if (w.data && w.data.trim()) {
       s += "\ndata: " + w.data;
     }
@@ -780,7 +788,7 @@ class BroadlinkIRPanel extends HTMLElement {
       this.shadowRoot.querySelectorAll(".mode-tab").forEach(t => t.addEventListener("click", () => {
         if (t.dataset.mode) {
           w.mode = t.dataset.mode;
-          if (w.mode !== "service" && !/set_cover_position|turn_on/.test(w.service)) w.service = this._services.find(s => /turn_on/.test(s)) || w.service;
+          if (w.mode !== "service" && !/cover\.|light\.turn_on/.test(w.service)) w.service = this._services.find(s => /cover\.set_cover_position|light\.turn_on/.test(s)) || w.service;
           this._renderWizard();
         }
       }));
@@ -790,11 +798,14 @@ class BroadlinkIRPanel extends HTMLElement {
         const dat = this._$("wzData"); if (dat) w.data = dat.value;
         const val = this._$("wzValue"); if (val) { w.value = val.value; const lbl = this._$("wzValLbl"); if (lbl) lbl.textContent = w.value + "%"; }
         const stp = this._$("wzStep"); if (stp) { w.stepPct = stp.value; const lbl = this._$("wzStepLbl"); if (lbl) lbl.textContent = w.stepPct + "%"; }
+        const sdir = this._$("wzStepDir"); if (sdir) w.stepDir = parseInt(sdir.value);
         const prev = this._$("wzPrev"); if (prev) prev.textContent = this._previewText();
       };
-      ["wzService", "wzTarget", "wzData", "wzValue", "wzStep"].forEach(id => {
+      ["wzService", "wzTarget", "wzData", "wzValue", "wzStep", "wzStepDir"].forEach(id => {
         const el = this._$(id); if (el) el.addEventListener("input", sync);
       });
+      const svcEl = this._$("wzService");
+      if (svcEl && w.mode === "step") svcEl.addEventListener("change", () => { sync(); this._renderWizard(); });
       sync();
       this._$("wzBack").addEventListener("click", () => { w.step = 1; w.capturing = false; this._renderWizard(); });
       this._$("wzToSave").addEventListener("click", () => { w.step = 3; this._renderWizard(); });
@@ -815,6 +826,7 @@ class BroadlinkIRPanel extends HTMLElement {
       button: w.button, ir_code: w.ir_code, mode: w.mode,
       service: w.service, target: w.target,
       value: Number(w.value), stepPct: Number(w.stepPct),
+      stepDir: Number(w.stepDir || 1),
       data: w.data, name: w.name
     };
     const remote = this._curRemote();

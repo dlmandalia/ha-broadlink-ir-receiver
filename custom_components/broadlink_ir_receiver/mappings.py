@@ -130,8 +130,18 @@ class MappingsStore:
             key = "position" if "cover" in service else "brightness_pct"
             service_data[key] = int(mapping.get("value", 0))
         elif mode == "step":
-            key = "position_step" if "cover" in service else "brightness_step_pct"
-            service_data[key] = int(mapping.get("stepPct", 10))
+            step_pct = int(mapping.get("stepPct", 10))
+            if "cover" in service:
+                step_dir = int(mapping.get("stepDir", 1))
+                current = 0
+                if target:
+                    state = self._hass.states.get(target)
+                    if state:
+                        current = int(state.attributes.get("current_position", 0))
+                new_pos = max(0, min(100, current + step_pct * step_dir))
+                service_data["position"] = new_pos
+            else:
+                service_data["brightness_step_pct"] = step_pct
         elif mode == "service":
             extra = mapping.get("data")
             if extra and isinstance(extra, str):
