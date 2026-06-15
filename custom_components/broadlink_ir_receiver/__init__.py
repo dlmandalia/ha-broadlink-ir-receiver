@@ -20,6 +20,7 @@ from .const import (
     MAX_CODE_HISTORY,
     PLATFORMS,
 )
+from .mappings import MappingsStore, ws_get_config, ws_set_config
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -323,8 +324,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         websocket_api.async_register_command(hass, ws_get_state)
         websocket_api.async_register_command(hass, ws_toggle)
         websocket_api.async_register_command(hass, ws_clear_codes)
+        websocket_api.async_register_command(hass, ws_get_config)
+        websocket_api.async_register_command(hass, ws_set_config)
         await _register_panel(hass)
         hass.data[DOMAIN]["_panel_registered"] = True
+
+    if "_mappings_store" not in hass.data[DOMAIN]:
+        store = MappingsStore(hass)
+        await store.async_load()
+        store.start_executor()
+        hass.data[DOMAIN]["_mappings_store"] = store
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -338,5 +347,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         data = hass.data[DOMAIN].pop(entry.entry_id, None)
         if data and "listener" in data:
             await hass.async_add_executor_job(data["listener"].stop)
+
+        remaining = {
+            k for k in hass.data.get(DOMAIN, {}) if not k.startswith("_")
+        }
+        if not remaining:
+            store = hass.data[DOMAIN].pop("_mappings_store", None)
+            if store:
+                store.stop_executor()
 
     return unload_ok
