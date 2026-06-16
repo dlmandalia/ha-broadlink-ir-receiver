@@ -791,7 +791,7 @@ class BroadlinkIRPanel extends HTMLElement {
   _renderActionCard(a, idx, total) {
     const pfx = "wza" + idx + "_";
     const svcField = (lbl, id, opts, sel) => `<div class="field"><label>${lbl}</label><select id="${id}">${opts.map(o => `<option value="${this._esc(o)}" ${o === sel ? "selected" : ""}>${this._esc(o)}</option>`).join("")}</select></div>`;
-    const entField = (lbl, id, sel) => `<div class="field"><label>${lbl}</label><select id="${id}">${this._entities.map(e => `<option value="${this._esc(e.id)}" ${e.id === sel ? "selected" : ""}>${this._esc(e.name)}</option>`).join("")}</select></div>`;
+    const entField = (lbl, id, sel) => `<div class="field"><label>${lbl} <span class="lk wzRefreshEnt" style="font-size:10px;cursor:pointer;margin-left:6px" title="Refresh entity list">↻ refresh</span></label><select id="${id}">${this._entities.map(e => `<option value="${this._esc(e.id)}" ${e.id === sel ? "selected" : ""}>${this._esc(e.name)} — ${this._esc(e.id)}</option>`).join("")}</select></div>`;
     const tab = (mode, txt) => `<div class="mode-tab ${a.mode === mode ? "on" : ""}" data-actidx="${idx}" data-amode="${mode}">${txt}</div>`;
     let fields = "";
     if (a.mode === "service") {
@@ -913,6 +913,9 @@ class BroadlinkIRPanel extends HTMLElement {
       });
       const addBtn = this._$("wzAddAction");
       if (addBtn) addBtn.addEventListener("click", () => { w.actions.push(this._defaultAction()); this._renderWizard(); });
+      this.shadowRoot.querySelectorAll(".wzRefreshEnt").forEach(btn => {
+        btn.addEventListener("click", async () => { await this._loadHA(); this._renderWizard(); });
+      });
       syncAll();
       this._$("wzBack").addEventListener("click", () => { w.step = 1; w.capturing = false; this._renderWizard(); });
       this._$("wzToSave").addEventListener("click", () => { w.step = 3; this._renderWizard(); });
