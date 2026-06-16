@@ -92,13 +92,12 @@ class MappingsStore:
                     if m.get("ir_code") != code:
                         continue
                     _LOGGER.info(
-                        "IR match: %s → %s on remote '%s' (device %s)",
+                        "IR match: %s on remote '%s' (device %s)",
                         code,
-                        m.get("service"),
                         remote.get("name"),
                         entry_id,
                     )
-                    self._execute(m, host)
+                    self._execute_mapping(m, host)
                     return
 
         self._unsub = self._hass.bus.async_listen(EVENT_IR_COMMAND, _handle_ir)
@@ -115,25 +114,32 @@ class MappingsStore:
             self._unsub()
             self._unsub = None
 
-    def _execute(self, mapping: dict, host: str) -> None:
-        service = mapping.get("service", "")
+    def _execute_mapping(self, mapping: dict, host: str) -> None:
+        actions = mapping.get("actions")
+        if actions:
+            for action in actions:
+                self._execute_action(action)
+        elif mapping.get("service"):
+            self._execute_action(mapping)
+
+    def _execute_action(self, action: dict) -> None:
+        service = action.get("service", "")
         if "." not in service:
             return
         domain, svc = service.split(".", 1)
         service_data = {}
-        target = mapping.get("target")
+        target = action.get("target")
         if target:
             service_data["entity_id"] = target
 
-        mode = mapping.get("mode", "service")
-        _LOGGER.warning("EXEC mode=%s service=%s target=%s mapping_keys=%s", mode, service, target, list(mapping.keys()))
+        mode = action.get("mode", "service")
         if mode == "level":
             key = "position" if "cover" in service else "brightness_pct"
-            service_data[key] = int(mapping.get("value", 0))
+            service_data[key] = int(action.get("value", 0))
         elif mode == "step":
-            step_pct = int(mapping.get("stepPct", 10))
+            step_pct = int(action.get("stepPct", 10))
             if "cover" in service:
-                step_dir = int(mapping.get("stepDir", 1))
+                step_dir = int(action.get("stepDir", 1))
                 current = 0
                 if target:
                     state = self._hass.states.get(target)
@@ -144,7 +150,7 @@ class MappingsStore:
             else:
                 service_data["brightness_step_pct"] = step_pct
         elif mode == "service":
-            extra = mapping.get("data")
+            extra = action.get("data")
             if extra and isinstance(extra, str):
                 import json
 
@@ -155,7 +161,7 @@ class MappingsStore:
             if isinstance(extra, dict):
                 service_data.update(extra)
 
-        _LOGGER.warning("CALL %s.%s data=%s", domain, svc, service_data)
+        _LOGGER.info("EXEC %s.%s → %s", domain, svc, service_data)
         self._hass.async_create_task(
             self._hass.services.async_call(domain, svc, service_data)
         )

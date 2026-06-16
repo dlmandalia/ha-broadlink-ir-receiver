@@ -80,7 +80,7 @@ class BroadlinkIRPanel extends HTMLElement {
   async _loadHA() {
     try {
       const states = await this._hass.connection.sendMessagePromise({ type: "get_states" });
-      this._entities = (states || []).map(s => s.entity_id).sort();
+      this._entities = (states || []).map(s => ({id: s.entity_id, name: s.attributes?.friendly_name || s.entity_id})).sort((a,b) => a.name.localeCompare(b.name));
     } catch (e) { this._entities = []; }
     try {
       const svc = await this._hass.connection.sendMessagePromise({ type: "get_services" });
@@ -386,7 +386,7 @@ class BroadlinkIRPanel extends HTMLElement {
       #toast.show{transform:translateX(-50%) translateY(0)}
     `;
     this.shadowRoot.innerHTML = `<style>${S}</style>
-      <div class="header"><h1>IR Remote &amp; Automation Wizard</h1><span style="margin-left:auto;font-size:11px;color:var(--secondary-text-color,#9aa3ad)">v2.3.0</span></div>
+      <div class="header"><h1>IR Remote &amp; Automation Wizard</h1><span style="margin-left:auto;font-size:11px;color:var(--secondary-text-color,#9aa3ad)">v2.4.0</span></div>
       <div class="topbar" id="topbar"></div>
       <div class="layout">
         <div class="panel"><div class="remote-pick"><select id="remoteSel"></select><button class="iconbtn" id="newRemote" title="New remote">＋</button><button class="iconbtn danger" id="delRemote" title="Delete remote">🗑</button></div><h2 id="remoteTitle">Remote</h2><div class="remote"><div id="remoteGrid"></div><div class="cont"><div class="lbl"><span>Continuous control</span></div><div class="readout" id="cVal">30%</div><input type="range" id="cSlider" min="0" max="100" value="30"><div class="rocker"><button class="key" id="cMinus">– hold</button><button class="key" id="cPlus">+ hold</button></div><div class="presets"><button class="chip" data-p="20">20%</button><button class="chip" data-p="30">30%</button><button class="chip" data-p="50">50%</button></div><div class="note">Hold –/+ to ramp. UX for step-mode mappings.</div></div></div></div>
@@ -632,7 +632,7 @@ class BroadlinkIRPanel extends HTMLElement {
     const rows = maps.map(m => `<tr>
       <td>${this._esc(this._label(m.button))}</td>
       <td class="mono">${this._esc(m.ir_code)}</td>
-      <td><span class="badge">${this._esc(m.mode)}</span> ${this._esc(this._summary(m))}</td>
+      <td><span class="badge">${m.actions ? m.actions.length + " action" + (m.actions.length > 1 ? "s" : "") : this._esc(m.mode || "service")}</span> ${this._esc(this._summary(m))}</td>
       <td style="text-align:right;white-space:nowrap"><span class="lk" data-edit="${m.id}">edit</span> · <span class="lk del" data-del="${m.id}">delete</span></td>
     </tr>`).join("");
     el.innerHTML = `<h2>Mapped buttons — ${this._esc(this._curRemote().name)} (${maps.length})</h2>
@@ -648,27 +648,50 @@ class BroadlinkIRPanel extends HTMLElement {
     }));
   }
 
-  _summary(m) {
+  _actionSummary(a) {
     const vk = s => s.includes("cover") ? "position" : "brightness_pct";
-    if (m.mode === "service") return m.service + " → " + (m.target || "—");
-    if (m.mode === "level") return m.service + " " + vk(m.service) + "=" + m.value;
-    if (m.mode === "step") {
-      const dir = m.service?.includes("cover") ? (m.stepDir == -1 ? "↓" : "↑") : "";
-      return m.service + " step=" + dir + m.stepPct + "%";
+    const name = this._entName(a.target);
+    if (a.mode === "level") return name + " → " + vk(a.service) + "=" + a.value + "%";
+    if (a.mode === "step") {
+      const dir = a.service?.includes("cover") ? (a.stepDir == -1 ? "↓" : "↑") : "";
+      return name + " → step " + dir + a.stepPct + "%";
     }
-    return "";
+    return a.service + " → " + name;
+  }
+  _summary(m) {
+    const actions = m.actions || [{service: m.service, target: m.target, mode: m.mode || "service", value: m.value, stepPct: m.stepPct, stepDir: m.stepDir}];
+    if (actions.length === 1) return this._actionSummary(actions[0]);
+    return actions.length + " actions: " + actions.map(a => this._entName(a.target)).join(", ");
   }
 
   // --- wizard ---
+  _defaultAction() {
+    return {
+      service: this._services.find(s => s === "light.toggle") || this._services[0] || "light.toggle",
+      target: (this._entities.find(e => e.id.startsWith("light.")) || this._entities[0] || {id:""}).id,
+      mode: "service", value: 30, stepPct: 10, stepDir: 1, data: ""
+    };
+  }
+  _migrateActions(m) {
+    if (m.actions) return m.actions;
+    return [{ service: m.service, target: m.target, mode: m.mode || "service", value: m.value || 30, stepPct: m.stepPct || 10, stepDir: m.stepDir || 1, data: m.data || "" }];
+  }
+  _entName(entityId) {
+    const e = this._entities.find(x => x.id === entityId);
+    return e ? e.name : entityId;
+  }
   _startWizard(b, existing) {
     this._cancelCapture();
-    this._wiz = existing
-      ? Object.assign({ step: 2, button: b.id, capturing: false, captureMode: "ir", captureError: null }, existing)
-      : { step: 1, button: b.id, capturing: true, ir_code: null, mode: "service",
+    if (existing) {
+      this._wiz = Object.assign({ step: 2, button: b.id, capturing: false, captureMode: "ir", captureError: null }, existing);
+      this._wiz.actions = this._migrateActions(existing);
+    } else {
+      this._wiz = { step: 1, button: b.id, capturing: true, ir_code: null,
           captureMode: "ir", captureError: null,
-          service: this._services.find(s => s === "light.toggle") || this._services[0] || "light.toggle",
-          target: this._entities.find(s => s.startsWith("light.")) || this._entities[0] || "",
-          value: 30, stepPct: 10, stepDir: 1, data: "", name: "IR " + b.id.replace("_", " ") };
+          actions: [this._defaultAction()],
+          name: "IR " + b.id.replace("_", " ") };
+    }
+    this._wiz.activeAction = 0;
     if (this._wiz.step === undefined) this._wiz.step = 1;
     this._renderRemote();
     this._renderWizard();
@@ -713,32 +736,45 @@ class BroadlinkIRPanel extends HTMLElement {
       <div class="row-btns"><button class="btn ghost" id="wzRetry">Retry</button><button class="btn primary" id="wzNext">Next →</button></div>`;
   }
 
-  _stepAction() {
-    const w = this._wiz;
-    const tab = (id, txt) => `<div class="mode-tab ${w.mode === id ? "on" : ""}" data-mode="${id}">${txt}</div>`;
-    const selField = (lbl, id, opts, sel) => `<div class="field"><label>${lbl}</label><select id="${id}">${opts.map(o => `<option ${o === sel ? "selected" : ""}>${this._esc(o)}</option>`).join("")}</select></div>`;
+  _renderActionCard(a, idx, total) {
+    const pfx = "wza" + idx + "_";
+    const svcField = (lbl, id, opts, sel) => `<div class="field"><label>${lbl}</label><select id="${id}">${opts.map(o => `<option value="${this._esc(o)}" ${o === sel ? "selected" : ""}>${this._esc(o)}</option>`).join("")}</select></div>`;
+    const entField = (lbl, id, sel) => `<div class="field"><label>${lbl}</label><select id="${id}">${this._entities.map(e => `<option value="${this._esc(e.id)}" ${e.id === sel ? "selected" : ""}>${this._esc(e.name)}</option>`).join("")}</select></div>`;
+    const tab = (mode, txt) => `<div class="mode-tab ${a.mode === mode ? "on" : ""}" data-actidx="${idx}" data-amode="${mode}">${txt}</div>`;
     let fields = "";
-    if (w.mode === "service") {
-      fields = selField("Service", "wzService", this._services, w.service) +
-        selField("Target entity", "wzTarget", this._entities, w.target) +
-        `<div class="field"><label>Extra data (JSON, optional)</label><textarea id="wzData" placeholder='{ "brightness_pct": 80 }'>${this._esc(w.data)}</textarea></div>`;
-    } else if (w.mode === "level") {
+    if (a.mode === "service") {
+      fields = svcField("Service", pfx+"svc", this._services, a.service) +
+        entField("Target entity", pfx+"tgt", a.target) +
+        `<div class="field"><label>Extra data (JSON, optional)</label><textarea id="${pfx}data" placeholder='{ "brightness_pct": 80 }'>${this._esc(a.data || "")}</textarea></div>`;
+    } else if (a.mode === "level") {
       const lvlSvc = this._services.filter(s => /cover\.|light\.turn_on/.test(s));
-      fields = selField("Service", "wzService", lvlSvc, w.service) +
-        selField("Target entity", "wzTarget", this._entities, w.target) +
-        `<div class="field"><label>Level: <b id="wzValLbl">${w.value}%</b></label><input type="range" id="wzValue" min="0" max="100" value="${w.value}"></div>`;
+      fields = svcField("Service", pfx+"svc", lvlSvc, a.service) +
+        entField("Target entity", pfx+"tgt", a.target) +
+        `<div class="field"><label>Level: <b id="${pfx}valLbl">${a.value}%</b></label><input type="range" id="${pfx}val" min="0" max="100" value="${a.value}"></div>`;
     } else {
       const stepSvc = this._services.filter(s => /cover\.|light\.turn_on/.test(s));
-      if (!w.stepDir) w.stepDir = 1;
-      const isCover = (w.service || "").includes("cover");
-      const dirHtml = isCover ? `<div class="field"><label>Direction</label><select id="wzStepDir"><option value="1" ${w.stepDir == 1 ? "selected" : ""}>↑ Open (increase)</option><option value="-1" ${w.stepDir == -1 ? "selected" : ""}>↓ Close (decrease)</option></select></div>` : "";
-      fields = selField("Service", "wzService", stepSvc, w.service) +
-        selField("Target entity", "wzTarget", this._entities, w.target) + dirHtml +
-        `<div class="field"><label>Step per press: <b id="wzStepLbl">${w.stepPct}%</b></label><input type="range" id="wzStep" min="5" max="50" step="5" value="${w.stepPct}"></div>
-        <div style="font-size:11px;color:var(--secondary-text-color)">Each IR press moves by this step${isCover ? " (reads current position)" : ""}.</div>`;
+      const isCover = (a.service || "").includes("cover");
+      const dirHtml = isCover ? `<div class="field"><label>Direction</label><select id="${pfx}dir"><option value="1" ${a.stepDir == 1 ? "selected" : ""}>↑ Open (increase)</option><option value="-1" ${a.stepDir == -1 ? "selected" : ""}>↓ Close (decrease)</option></select></div>` : "";
+      fields = svcField("Service", pfx+"svc", stepSvc, a.service) +
+        entField("Target entity", pfx+"tgt", a.target) + dirHtml +
+        `<div class="field"><label>Step per press: <b id="${pfx}stepLbl">${a.stepPct}%</b></label><input type="range" id="${pfx}step" min="5" max="50" step="5" value="${a.stepPct}"></div>`;
     }
+    const removeBtn = total > 1 ? `<span class="lk del" data-rmact="${idx}" style="float:right;font-size:11px;cursor:pointer">✕ Remove</span>` : "";
+    return `<div class="action-card" data-aidx="${idx}" style="border:1px solid var(--divider-color,#313742);border-radius:8px;padding:12px;margin-bottom:10px;background:rgba(0,0,0,.15)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-size:12px;font-weight:600;color:var(--primary-color,#03a9f4)">Action ${idx + 1}</span>${removeBtn}
+      </div>
+      <div class="mode-tabs" style="margin-bottom:10px">${tab("service","Service call")}${tab("level","Set level")}${tab("step","Step level")}</div>
+      ${fields}
+    </div>`;
+  }
+
+  _stepAction() {
+    const w = this._wiz;
+    const cards = w.actions.map((a, i) => this._renderActionCard(a, i, w.actions.length)).join("");
     return `<div class="wz-title">What should <span class="mono" style="color:var(--primary-color,#03a9f4)">${this._esc(w.ir_code)}</span> do?</div>
-      <div class="mode-tabs">${tab("service", "Service call")}${tab("level", "Set level")}${tab("step", "Step level")}</div>${fields}
+      <div id="actionCards">${cards}</div>
+      <button class="btn ghost" id="wzAddAction" style="width:100%;margin-bottom:14px;padding:8px;font-size:12px">＋ Add another action</button>
       <div class="field"><label>Live preview</label><div class="preview" id="wzPrev"></div></div>
       <div class="row-btns"><button class="btn ghost" id="wzBack">← Back</button><button class="btn primary" id="wzToSave">Next →</button></div>`;
   }
@@ -751,22 +787,25 @@ class BroadlinkIRPanel extends HTMLElement {
       <div class="row-btns"><button class="btn ghost" id="wzBack2">← Back</button><button class="btn primary" id="wzSave">Save mapping</button></div>`;
   }
 
-  _previewText() {
-    const w = this._wiz;
-    let s = "service: " + w.service + "\ntarget:\n  entity_id: " + w.target;
-    if (w.mode === "level") {
-      const k = w.service.includes("cover") ? "position" : "brightness_pct";
-      s += "\ndata:\n  " + k + ": " + w.value;
-    } else if (w.mode === "step") {
-      if (w.service.includes("cover")) {
-        s += "\ndata:\n  position: current " + (w.stepDir == -1 ? "- " : "+ ") + w.stepPct;
+  _previewAction(a) {
+    let s = "service: " + a.service + "\ntarget:\n  entity_id: " + a.target;
+    if (a.mode === "level") {
+      const k = a.service.includes("cover") ? "position" : "brightness_pct";
+      s += "\ndata:\n  " + k + ": " + a.value;
+    } else if (a.mode === "step") {
+      if (a.service.includes("cover")) {
+        s += "\ndata:\n  position: current " + (a.stepDir == -1 ? "- " : "+ ") + a.stepPct;
       } else {
-        s += "\ndata:\n  brightness_step_pct: " + w.stepPct;
+        s += "\ndata:\n  brightness_step_pct: " + a.stepPct;
       }
-    } else if (w.data && w.data.trim()) {
-      s += "\ndata: " + w.data;
+    } else if (a.data && a.data.trim()) {
+      s += "\ndata: " + a.data;
     }
     return s;
+  }
+  _previewText() {
+    const w = this._wiz;
+    return w.actions.map((a, i) => (w.actions.length > 1 ? `# Action ${i+1}\n` : "") + this._previewAction(a)).join("\n---\n");
   }
 
   _bindWizard() {
@@ -785,28 +824,44 @@ class BroadlinkIRPanel extends HTMLElement {
         this._startCapture();
       }));
     } else if (w.step === 2) {
-      this.shadowRoot.querySelectorAll(".mode-tab").forEach(t => t.addEventListener("click", () => {
-        if (t.dataset.mode) {
-          w.mode = t.dataset.mode;
-          if (w.mode !== "service" && !/cover\.|light\.turn_on/.test(w.service)) w.service = this._services.find(s => /cover\.set_cover_position|light\.turn_on/.test(s)) || w.service;
-          this._renderWizard();
-        }
+      this.shadowRoot.querySelectorAll("[data-amode]").forEach(t => t.addEventListener("click", () => {
+        const idx = parseInt(t.dataset.actidx);
+        const a = w.actions[idx];
+        if (!a) return;
+        a.mode = t.dataset.amode;
+        if (a.mode !== "service" && !/cover\.|light\.turn_on/.test(a.service)) a.service = this._services.find(s => /cover\.set_cover_position|light\.turn_on/.test(s)) || a.service;
+        this._renderWizard();
       }));
-      const sync = () => {
-        const svc = this._$("wzService"); if (svc) w.service = svc.value;
-        const tgt = this._$("wzTarget"); if (tgt) w.target = tgt.value;
-        const dat = this._$("wzData"); if (dat) w.data = dat.value;
-        const val = this._$("wzValue"); if (val) { w.value = val.value; const lbl = this._$("wzValLbl"); if (lbl) lbl.textContent = w.value + "%"; }
-        const stp = this._$("wzStep"); if (stp) { w.stepPct = stp.value; const lbl = this._$("wzStepLbl"); if (lbl) lbl.textContent = w.stepPct + "%"; }
-        const sdir = this._$("wzStepDir"); if (sdir) w.stepDir = parseInt(sdir.value);
+      const syncAll = () => {
+        w.actions.forEach((a, i) => {
+          const pfx = "wza" + i + "_";
+          const svc = this._$(pfx+"svc"); if (svc) a.service = svc.value;
+          const tgt = this._$(pfx+"tgt"); if (tgt) a.target = tgt.value;
+          const dat = this._$(pfx+"data"); if (dat) a.data = dat.value;
+          const val = this._$(pfx+"val"); if (val) { a.value = val.value; const lbl = this._$(pfx+"valLbl"); if (lbl) lbl.textContent = a.value + "%"; }
+          const stp = this._$(pfx+"step"); if (stp) { a.stepPct = stp.value; const lbl = this._$(pfx+"stepLbl"); if (lbl) lbl.textContent = a.stepPct + "%"; }
+          const dir = this._$(pfx+"dir"); if (dir) a.stepDir = parseInt(dir.value);
+        });
         const prev = this._$("wzPrev"); if (prev) prev.textContent = this._previewText();
       };
-      ["wzService", "wzTarget", "wzData", "wzValue", "wzStep", "wzStepDir"].forEach(id => {
-        const el = this._$(id); if (el) el.addEventListener("input", sync);
+      w.actions.forEach((a, i) => {
+        const pfx = "wza" + i + "_";
+        [pfx+"svc", pfx+"tgt", pfx+"data", pfx+"val", pfx+"step", pfx+"dir"].forEach(id => {
+          const el = this._$(id); if (el) el.addEventListener("input", syncAll);
+        });
+        const svcEl = this._$(pfx+"svc");
+        if (svcEl && a.mode === "step") svcEl.addEventListener("change", () => { syncAll(); this._renderWizard(); });
       });
-      const svcEl = this._$("wzService");
-      if (svcEl && w.mode === "step") svcEl.addEventListener("change", () => { sync(); this._renderWizard(); });
-      sync();
+      this.shadowRoot.querySelectorAll("[data-rmact]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const idx = parseInt(btn.dataset.rmact);
+          w.actions.splice(idx, 1);
+          this._renderWizard();
+        });
+      });
+      const addBtn = this._$("wzAddAction");
+      if (addBtn) addBtn.addEventListener("click", () => { w.actions.push(this._defaultAction()); this._renderWizard(); });
+      syncAll();
       this._$("wzBack").addEventListener("click", () => { w.step = 1; w.capturing = false; this._renderWizard(); });
       this._$("wzToSave").addEventListener("click", () => { w.step = 3; this._renderWizard(); });
     } else {
@@ -821,13 +876,15 @@ class BroadlinkIRPanel extends HTMLElement {
 
   _saveMapping() {
     const w = this._wiz;
+    const actions = w.actions.map(a => ({
+      service: a.service, target: a.target, mode: a.mode || "service",
+      value: Number(a.value || 30), stepPct: Number(a.stepPct || 10),
+      stepDir: Number(a.stepDir || 1), data: a.data || ""
+    }));
     const rec = {
       id: w.id || ("m" + Date.now()),
-      button: w.button, ir_code: w.ir_code, mode: w.mode,
-      service: w.service, target: w.target,
-      value: Number(w.value), stepPct: Number(w.stepPct),
-      stepDir: Number(w.stepDir || 1),
-      data: w.data, name: w.name
+      button: w.button, ir_code: w.ir_code,
+      actions, name: w.name
     };
     const remote = this._curRemote();
     remote.mappings = remote.mappings.filter(m => m.id !== rec.id && m.button !== rec.button).concat(rec);
