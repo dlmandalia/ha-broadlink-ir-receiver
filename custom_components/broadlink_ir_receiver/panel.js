@@ -339,6 +339,16 @@ class BroadlinkIRPanel extends HTMLElement {
       .cont .note{font-size:11px;color:var(--secondary-text-color,#9aa3ad);text-align:center;margin-top:8px}
 
       .map-empty{color:var(--secondary-text-color,#9aa3ad);text-align:center;padding:26px 10px;font-size:14px}
+      .auto-card{background:var(--card-background-color,#232830);border:1px solid var(--divider-color,#313742);border-radius:10px;padding:14px;margin-bottom:12px;transition:.15s}
+      .auto-card:hover{border-color:var(--primary-color,#03a9f4)}
+      .auto-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+      .auto-title{font-size:14px;font-weight:600;color:var(--primary-text-color,#e4e7eb)}
+      .auto-controls{display:flex;gap:10px}
+      .auto-trigger{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+      .auto-btn-badge{background:var(--primary-color,#03a9f4);color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:4px;text-transform:uppercase;letter-spacing:.3px}
+      .auto-actions{display:flex;flex-direction:column;gap:6px}
+      .auto-action-row{display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(0,0,0,.18);border-radius:6px;font-size:13px}
+      .auto-action-text{color:var(--primary-text-color,#e4e7eb);flex:1}
       table{width:100%;border-collapse:collapse;font-size:13px}
       th{text-align:left;color:var(--secondary-text-color,#9aa3ad);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.4px;padding:8px;border-bottom:1px solid var(--divider-color,#313742)}
       td{padding:10px 8px;border-bottom:1px solid #262b32}
@@ -620,23 +630,65 @@ class BroadlinkIRPanel extends HTMLElement {
     return btn;
   }
 
-  // --- middle: mappings table or wizard ---
+  // --- middle: automations view or wizard ---
+  _actionIcon(a) {
+    const s = a.service || "";
+    if (s.includes("light")) return "💡";
+    if (s.includes("fan")) return "🌀";
+    if (s.includes("cover") || s.includes("curtain")) return "🪟";
+    if (s.includes("climate") || s.includes("ac")) return "❄️";
+    if (s.includes("switch")) return "🔌";
+    if (s.includes("media_player")) return "📺";
+    if (s.includes("script")) return "📜";
+    if (s.includes("scene")) return "🎬";
+    if (s.includes("lock")) return "🔒";
+    return "⚡";
+  }
+  _actionLabel(a) {
+    const name = this._entName(a.target);
+    const svc = (a.service || "").split(".").pop() || "";
+    const verb = svc.replace(/_/g, " ");
+    if (a.mode === "level") {
+      const unit = (a.service || "").includes("cover") ? "position" : "brightness";
+      return `${name} — set ${unit} to ${a.value}%`;
+    }
+    if (a.mode === "step") {
+      const dir = (a.service || "").includes("cover") ? (a.stepDir == -1 ? "close" : "open") : "adjust";
+      return `${name} — ${dir} by ${a.stepPct}%`;
+    }
+    return `${name} — ${verb}`;
+  }
   _renderMiddle() {
     if (this._wiz) return this._renderWizard();
     const el = this._$("middle");
     const maps = this._curMaps();
     if (!maps.length) {
-      el.innerHTML = `<h2>Mapped buttons — ${this._esc(this._curRemote().name)}</h2><div class="map-empty">No buttons mapped on this remote.<br>Click a button on the remote to start the learn wizard.</div>`;
+      el.innerHTML = `<h2>Automations — ${this._esc(this._curRemote().name)}</h2><div class="map-empty">No automations on this remote.<br>Click a button on the remote to create one, or use an AI agent with the AGENTS.md guide.</div>`;
       return;
     }
-    const rows = maps.map(m => `<tr>
-      <td>${this._esc(this._label(m.button))}</td>
-      <td class="mono">${this._esc(m.ir_code)}</td>
-      <td><span class="badge">${m.actions ? m.actions.length + " action" + (m.actions.length > 1 ? "s" : "") : this._esc(m.mode || "service")}</span> ${this._esc(this._summary(m))}</td>
-      <td style="text-align:right;white-space:nowrap"><span class="lk" data-edit="${m.id}">edit</span> · <span class="lk del" data-del="${m.id}">delete</span></td>
-    </tr>`).join("");
-    el.innerHTML = `<h2>Mapped buttons — ${this._esc(this._curRemote().name)} (${maps.length})</h2>
-      <table><thead><tr><th>Button</th><th>IR code</th><th>Action</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+    const cards = maps.map(m => {
+      const actions = m.actions || [{service: m.service, target: m.target, mode: m.mode || "service", value: m.value, stepPct: m.stepPct, stepDir: m.stepDir, data: m.data}];
+      const actionRows = actions.map(a =>
+        `<div class="auto-action-row">${this._actionIcon(a)}<span class="auto-action-text">${this._esc(this._actionLabel(a))}</span></div>`
+      ).join("");
+      const countBadge = actions.length > 1 ? `<span class="badge" style="font-size:10px">${actions.length} actions</span>` : "";
+      return `<div class="auto-card">
+        <div class="auto-header">
+          <div class="auto-title">${this._esc(m.name || "Untitled")}</div>
+          <div class="auto-controls">
+            <span class="lk" data-edit="${m.id}" style="font-size:12px">edit</span>
+            <span class="lk del" data-del="${m.id}" style="font-size:12px">delete</span>
+          </div>
+        </div>
+        <div class="auto-trigger">
+          <span class="auto-btn-badge">${this._esc(this._label(m.button))}</span>
+          <span class="mono" style="font-size:11px;color:var(--secondary-text-color)">${this._esc(m.ir_code)}</span>
+          ${countBadge}
+        </div>
+        <div class="auto-actions">${actionRows}</div>
+      </div>`;
+    }).join("");
+    el.innerHTML = `<h2>Automations — ${this._esc(this._curRemote().name)} (${maps.length})</h2>${cards}`;
     el.querySelectorAll("[data-del]").forEach(x => x.addEventListener("click", () => {
       this._curRemote().mappings = this._curMaps().filter(m => m.id !== x.dataset.del);
       this._saveConfig(); this._renderAll(); this._toast("Deleted");
