@@ -469,67 +469,98 @@ async def ws_remove_device(hass, connection, msg):
     connection.send_result(msg["id"], {"success": True})
 
 
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "broadlink_ir_receiver/start_rf_capture",
-        vol.Required("entry_id"): str,
-    }
-)
-@websocket_api.async_response
-async def ws_start_rf_capture(hass, connection, msg):
+def _get_rf_device(hass, msg, connection):
+    """Validate entry and return (dev, data) or send error and return None."""
     entry_id = msg["entry_id"]
     data = hass.data.get(DOMAIN, {}).get(entry_id)
     if not data or "listener" not in data:
         connection.send_error(msg["id"], "not_found", "Device not found")
-        return
-
-    dev_type = data.get("dev_type", 0)
-    if dev_type not in RF_CAPABLE_DEVTYPES:
+        return None, None
+    if data.get("dev_type", 0) not in RF_CAPABLE_DEVTYPES:
         connection.send_error(msg["id"], "not_supported", "Device does not support RF")
-        return
-
+        return None, None
     listener = data["listener"]
     if not listener._dev:
         connection.send_error(msg["id"], "not_connected", "Device not connected")
+        return None, None
+    return listener._dev, data
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "broadlink_ir_receiver/rf_sweep",
+        vol.Required("entry_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_rf_sweep(hass, connection, msg):
+    """Phase 1: sweep for RF frequency. User holds button during this."""
+    dev, data = _get_rf_device(hass, msg, connection)
+    if dev is None:
         return
 
-    dev = listener._dev
-
-    def _rf_capture():
+    def _sweep():
         import time as _time
-
         dev.sweep_frequency()
-        deadline = _time.monotonic() + 10
+        deadline = _time.monotonic() + 15
         while _time.monotonic() < deadline:
-            _time.sleep(0.2)
+            _time.sleep(0.25)
             if dev.check_frequency():
-                break
-        else:
-            return None, "Frequency scan timed out"
-
-        dev.find_rf_packet()
-        deadline = _time.monotonic() + 10
-        while _time.monotonic() < deadline:
-            _time.sleep(0.2)
-            try:
-                rf_data = dev.check_data()
-                if rf_data:
-                    return rf_data, None
-            except Exception:
-                continue
-        return None, "RF packet capture timed out"
+                return True
+        dev.cancel_sweep_frequency()
+        return False
 
     try:
-        rf_data, error = await hass.async_add_executor_job(_rf_capture)
+        found = await hass.async_add_executor_job(_sweep)
     except Exception as exc:
         connection.send_error(msg["id"], "rf_error", str(exc))
         return
 
-    if error:
-        connection.send_error(msg["id"], "rf_timeout", error)
+    if not found:
+        connection.send_error(msg["id"], "rf_timeout", "No RF frequency detected — hold the button longer")
         return
 
-    rf_hex = rf_data.hex() if rf_data else ""
+    connection.send_result(msg["id"], {"status": "frequency_found"})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "broadlink_ir_receiver/rf_capture",
+        vol.Required("entry_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_rf_capture(hass, connection, msg):
+    """Phase 2: capture RF packet. User short-presses button."""
+    dev, data = _get_rf_device(hass, msg, connection)
+    if dev is None:
+        return
+
+    def _capture():
+        import time as _time
+        dev.find_rf_packet()
+        deadline = _time.monotonic() + 10
+        while _time.monotonic() < deadline:
+            _time.sleep(0.25)
+            try:
+                rf_data = dev.check_data()
+                if rf_data:
+                    return rf_data
+            except Exception:
+                continue
+        return None
+
+    try:
+        rf_data = await hass.async_add_executor_job(_capture)
+    except Exception as exc:
+        connection.send_error(msg["id"], "rf_error", str(exc))
+        return
+
+    if not rf_data:
+        connection.send_error(msg["id"], "rf_timeout", "RF packet capture timed out — press button again")
+        return
+
+    rf_hex = rf_data.hex()
     connection.send_result(msg["id"], {"rf_code": rf_hex[:16] or rf_hex, "raw_hex": rf_hex})
 
 
@@ -559,7 +590,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "broadlink-ir-panel",
-                "module_url": f"/api/{DOMAIN}/panel.js?v=252",
+                "module_url": f"/api/{DOMAIN}/panel.js?v=260",
             }
         },
         require_admin=False,
@@ -592,7 +623,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         websocket_api.async_register_command(hass, ws_set_config)
         websocket_api.async_register_command(hass, ws_add_device)
         websocket_api.async_register_command(hass, ws_remove_device)
-        websocket_api.async_register_command(hass, ws_start_rf_capture)
+        websocket_api.async_register_command(hass, ws_rf_sweep)
+        websocket_api.async_register_command(hass, ws_rf_capture)
         await _register_panel(hass)
         hass.data[DOMAIN]["_panel_registered"] = True
 

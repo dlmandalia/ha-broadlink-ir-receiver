@@ -247,17 +247,34 @@ class BroadlinkIRPanel extends HTMLElement {
   }
 
   async _startRfCapture() {
+    this._wiz.rfPhase = 1;
+    this._renderWizard();
+    try {
+      await this._hass.connection.sendMessagePromise({
+        type: "broadlink_ir_receiver/rf_sweep",
+        entry_id: this._activeEntry,
+      });
+    } catch (e) {
+      this._wiz.capturing = false;
+      this._wiz.captureError = e.message || "Frequency scan failed";
+      this._renderWizard();
+      return;
+    }
+    this._wiz.rfPhase = 2;
+    this._renderWizard();
     try {
       const r = await this._hass.connection.sendMessagePromise({
-        type: "broadlink_ir_receiver/start_rf_capture",
+        type: "broadlink_ir_receiver/rf_capture",
         entry_id: this._activeEntry,
       });
       this._wiz.ir_code = r.rf_code || r.raw_hex?.substring(0, 16);
+      this._wiz.raw_hex = r.raw_hex;
       this._wiz.capturing = false;
+      this._wiz.rfPhase = 0;
       this._renderWizard();
     } catch (e) {
-      console.error("RF: capture failed", e);
       this._wiz.capturing = false;
+      this._wiz.rfPhase = 0;
       this._wiz.captureError = e.message || "RF capture failed";
       this._renderWizard();
     }
@@ -796,11 +813,26 @@ class BroadlinkIRPanel extends HTMLElement {
       <div class="mode-tab ${w.captureMode === "rf" ? "on" : ""}" data-cap="rf">RF</div>
     </div>` : "";
 
-    if (w.capturing) return `${modeToggle}<div class="capture-box"><div class="pulse">${w.captureMode === "rf" ? "📻" : "📡"}</div>
-      <div style="font-size:16px">Now receiving ${w.captureMode === "rf" ? "RF" : "IR"}…</div>
-      <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">Press the <b>${this._esc(this._label(w.button))}</b> button on your physical remote</div>
-      ${w.captureMode === "rf" ? '<div style="color:var(--secondary-text-color);font-size:11px;margin-top:8px">Hold the button for 2-3 seconds during frequency scan, then press again when prompted.</div>' : ""}</div>
-      <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button></div>`;
+    if (w.capturing) {
+      const isRFcap = w.captureMode === "rf";
+      const phase = w.rfPhase || 0;
+      let rfGuide = "";
+      if (isRFcap && phase === 1) {
+        rfGuide = `<div style="font-size:16px;font-weight:600">Step 1: Finding frequency…</div>
+          <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px"><b>Hold down</b> the <b>${this._esc(this._label(w.button))}</b> button on your remote (keep holding for 3-5 seconds)</div>
+          <div style="color:var(--secondary-text-color);font-size:11px;margin-top:4px">The device is scanning for the RF frequency your remote uses.</div>`;
+      } else if (isRFcap && phase === 2) {
+        rfGuide = `<div style="font-size:16px;font-weight:600;color:#4caf50">Frequency found!</div>
+          <div style="font-size:15px;margin-top:10px">Step 2: Capturing code…</div>
+          <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">Now <b>short-press</b> the <b>${this._esc(this._label(w.button))}</b> button once</div>`;
+      } else {
+        rfGuide = `<div style="font-size:16px">Now receiving IR…</div>
+          <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">Press the <b>${this._esc(this._label(w.button))}</b> button on your physical remote</div>`;
+      }
+      return `${modeToggle}<div class="capture-box"><div class="pulse">${isRFcap ? "📻" : "📡"}</div>
+        ${rfGuide}</div>
+        <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button></div>`;
+    }
 
     if (w.captureError) return `${modeToggle}<div class="capture-box"><div style="color:#f44336;font-size:16px">Capture failed</div>
       <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">${this._esc(w.captureError)}</div></div>
