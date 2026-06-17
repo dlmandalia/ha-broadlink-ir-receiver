@@ -425,7 +425,7 @@ class BroadlinkIRPanel extends HTMLElement {
       <div class="header"><h1>IR Remote &amp; Automation Wizard</h1><span style="margin-left:auto;font-size:11px;color:var(--secondary-text-color,#9aa3ad)">v2.7.0</span></div>
       <div class="topbar" id="topbar"></div>
       <div class="layout">
-        <div class="panel"><div class="remote-pick"><select id="remoteSel"></select><button class="iconbtn" id="newRemote" title="New remote">＋</button><button class="iconbtn danger" id="delRemote" title="Delete remote">🗑</button></div><h2 id="remoteTitle">Remote</h2><div class="remote"><div id="remoteGrid"></div><div class="cont"><div class="lbl"><span>Continuous control</span></div><div class="readout" id="cVal">30%</div><input type="range" id="cSlider" min="0" max="100" value="30"><div class="rocker"><button class="key" id="cMinus">– hold</button><button class="key" id="cPlus">+ hold</button></div><div class="presets"><button class="chip" data-p="20">20%</button><button class="chip" data-p="30">30%</button><button class="chip" data-p="50">50%</button></div><div class="note">Hold –/+ to ramp. UX for step-mode mappings.</div></div></div></div>
+        <div class="panel"><div class="remote-pick"><select id="remoteSel"></select><button class="iconbtn" id="newRemote" title="Add remote">＋</button><button class="iconbtn danger" id="delRemote" title="Delete remote">🗑</button></div><div id="addRemoteForm" style="display:none;padding:8px 0"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><select id="addRemoteType" style="padding:6px 8px;border-radius:6px;border:1px solid var(--divider-color,#313742);background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);font-size:12px"><option value="ir">IR Remote</option></select><input id="addRemoteName" placeholder="Remote name" style="flex:1;min-width:100px;padding:6px 8px;border-radius:6px;border:1px solid var(--divider-color,#313742);background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);font-size:12px"><button class="btn primary" id="addRemoteGo" style="font-size:12px;padding:6px 12px">Add</button><button class="btn ghost" id="addRemoteCancel" style="font-size:12px;padding:6px 8px">Cancel</button></div></div><h2 id="remoteTitle">Remote</h2><div class="remote"><div id="remoteGrid"></div><div class="cont"><div class="lbl"><span>Continuous control</span></div><div class="readout" id="cVal">30%</div><input type="range" id="cSlider" min="0" max="100" value="30"><div class="rocker"><button class="key" id="cMinus">– hold</button><button class="key" id="cPlus">+ hold</button></div><div class="presets"><button class="chip" data-p="20">20%</button><button class="chip" data-p="30">30%</button><button class="chip" data-p="50">50%</button></div><div class="note">Hold –/+ to ramp. UX for step-mode mappings.</div></div></div></div>
         <div><div class="panel" id="middle"></div></div>
         <div class="panel"><div class="log-hdr"><h2 style="margin:0">Live IR/RF Log</h2><div class="log-actions"><select id="logFilter" style="background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);border:1px solid var(--divider-color,#313742);border-radius:6px;padding:4px 8px;font-size:11px"><option value="">All devices</option></select><button class="sbtn ghost" id="clearLog">Clear</button></div></div><div class="log-scroll" id="log"></div></div>
       </div>
@@ -435,21 +435,30 @@ class BroadlinkIRPanel extends HTMLElement {
 
   _bindShell() {
     this._$("newRemote").addEventListener("click", () => {
+      const form = this._$("addRemoteForm");
       const dc = this._deviceConfig();
       const devType = this._entries[this._activeEntry]?.dev_type || 0;
       const canRF = BroadlinkIRPanel.RF_DEVTYPES.has(devType);
-      const name = prompt("New remote name:", "Remote " + (dc.remotes.length + 1));
-      if (!name) return;
-      let type = "ir";
-      if (canRF) {
-        const pick = prompt("Remote type? Enter 'ir' or 'rf':", "ir");
-        if (!pick) return;
-        type = pick.trim().toLowerCase() === "rf" ? "rf" : "ir";
-      }
+      const typeSel = this._$("addRemoteType");
+      typeSel.innerHTML = canRF
+        ? '<option value="ir">IR Remote</option><option value="rf">RF Remote</option>'
+        : '<option value="ir">IR Remote</option>';
+      this._$("addRemoteName").value = "Remote " + (dc.remotes.length + 1);
+      form.style.display = "block";
+      this._$("addRemoteName").focus();
+    });
+    this._$("addRemoteCancel").addEventListener("click", () => {
+      this._$("addRemoteForm").style.display = "none";
+    });
+    this._$("addRemoteGo").addEventListener("click", () => {
+      const dc = this._deviceConfig();
+      const type = this._$("addRemoteType").value;
+      const name = this._$("addRemoteName").value.trim() || ("Remote " + (dc.remotes.length + 1));
       const id = "r" + Date.now();
       dc.remotes.push({ id, name, type, mappings: [] });
       dc.sel = id;
       this._wiz = null;
+      this._$("addRemoteForm").style.display = "none";
       this._saveConfig();
       this._renderAll();
     });

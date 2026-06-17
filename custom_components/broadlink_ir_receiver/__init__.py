@@ -595,7 +595,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "broadlink-ir-panel",
-                "module_url": f"/api/{DOMAIN}/panel.js?v=271",
+                "module_url": f"/api/{DOMAIN}/panel.js?v=272",
             }
         },
         require_admin=False,
