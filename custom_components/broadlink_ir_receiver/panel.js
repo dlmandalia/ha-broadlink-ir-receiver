@@ -103,8 +103,8 @@ class BroadlinkIRPanel extends HTMLElement {
   _esc(s) { if (s == null) return ""; const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
   _$(id) { return this.shadowRoot.getElementById(id); }
   _deviceConfig() {
-    if (!this._activeEntry || !this._config.devices) return { remotes: [{ id: "r1", name: "Remote 1", mappings: [] }], sel: "r1" };
-    return this._config.devices[this._activeEntry] || { remotes: [{ id: "r1", name: "Remote 1", mappings: [] }], sel: "r1" };
+    if (!this._activeEntry || !this._config.devices) return { remotes: [{ id: "r1", name: "Remote 1", type: "ir", mappings: [] }], sel: "r1" };
+    return this._config.devices[this._activeEntry] || { remotes: [{ id: "r1", name: "Remote 1", type: "ir", mappings: [] }], sel: "r1" };
   }
   _curRemote() { const dc = this._deviceConfig(); return dc.remotes.find(r => r.id === dc.sel) || dc.remotes[0]; }
   _curMaps() { return this._curRemote().mappings; }
@@ -413,7 +413,7 @@ class BroadlinkIRPanel extends HTMLElement {
       #toast.show{transform:translateX(-50%) translateY(0)}
     `;
     this.shadowRoot.innerHTML = `<style>${S}</style>
-      <div class="header"><h1>IR Remote &amp; Automation Wizard</h1><span style="margin-left:auto;font-size:11px;color:var(--secondary-text-color,#9aa3ad)">v2.6.0</span></div>
+      <div class="header"><h1>IR Remote &amp; Automation Wizard</h1><span style="margin-left:auto;font-size:11px;color:var(--secondary-text-color,#9aa3ad)">v2.7.0</span></div>
       <div class="topbar" id="topbar"></div>
       <div class="layout">
         <div class="panel"><div class="remote-pick"><select id="remoteSel"></select><button class="iconbtn" id="newRemote" title="New remote">＋</button><button class="iconbtn danger" id="delRemote" title="Delete remote">🗑</button></div><h2 id="remoteTitle">Remote</h2><div class="remote"><div id="remoteGrid"></div><div class="cont"><div class="lbl"><span>Continuous control</span></div><div class="readout" id="cVal">30%</div><input type="range" id="cSlider" min="0" max="100" value="30"><div class="rocker"><button class="key" id="cMinus">– hold</button><button class="key" id="cPlus">+ hold</button></div><div class="presets"><button class="chip" data-p="20">20%</button><button class="chip" data-p="30">30%</button><button class="chip" data-p="50">50%</button></div><div class="note">Hold –/+ to ramp. UX for step-mode mappings.</div></div></div></div>
@@ -427,10 +427,18 @@ class BroadlinkIRPanel extends HTMLElement {
   _bindShell() {
     this._$("newRemote").addEventListener("click", () => {
       const dc = this._deviceConfig();
+      const devType = this._entries[this._activeEntry]?.dev_type || 0;
+      const canRF = BroadlinkIRPanel.RF_DEVTYPES.has(devType);
       const name = prompt("New remote name:", "Remote " + (dc.remotes.length + 1));
       if (!name) return;
+      let type = "ir";
+      if (canRF) {
+        const pick = prompt("Remote type? Enter 'ir' or 'rf':", "ir");
+        if (!pick) return;
+        type = pick.trim().toLowerCase() === "rf" ? "rf" : "ir";
+      }
       const id = "r" + Date.now();
-      dc.remotes.push({ id, name, mappings: [] });
+      dc.remotes.push({ id, name, type, mappings: [] });
       dc.sel = id;
       this._wiz = null;
       this._saveConfig();
@@ -631,9 +639,14 @@ class BroadlinkIRPanel extends HTMLElement {
   _renderSelector() {
     const sel = this._$("remoteSel");
     const dc = this._deviceConfig();
-    sel.innerHTML = dc.remotes.map(r =>
-      `<option value="${r.id}" ${r.id === dc.sel ? "selected" : ""}>${this._esc(r.name)} (${r.mappings.length})</option>`
-    ).join("");
+    sel.innerHTML = dc.remotes.map(r => {
+      const t = (r.type || "ir").toUpperCase();
+      return `<option value="${r.id}" ${r.id === dc.sel ? "selected" : ""}>[${t}] ${this._esc(r.name)} (${r.mappings.length})</option>`;
+    }).join("");
+    const cur = this._curRemote();
+    const rt = (cur.type || "ir").toUpperCase();
+    const title = this._$("remoteTitle");
+    if (title) title.innerHTML = `${this._esc(cur.name)} <span class="badge ${cur.type === "rf" ? "rf" : "ir"}" style="font-size:10px;padding:1px 6px;vertical-align:middle">${rt}</span>`;
   }
 
   _renderRemote() {
@@ -775,14 +788,16 @@ class BroadlinkIRPanel extends HTMLElement {
   }
   _startWizard(b, existing) {
     this._cancelCapture();
+    const remoteType = (this._curRemote().type || "ir").toLowerCase();
     if (existing) {
-      this._wiz = Object.assign({ step: 2, button: b.id, capturing: false, captureMode: "ir", captureError: null }, existing);
+      this._wiz = Object.assign({ step: 2, button: b.id, capturing: false, captureMode: remoteType, captureError: null }, existing);
       this._wiz.actions = this._migrateActions(existing);
     } else {
+      const label = remoteType.toUpperCase() + " " + b.id.replace("_", " ");
       this._wiz = { step: 1, button: b.id, capturing: true, ir_code: null,
-          captureMode: "ir", captureError: null,
+          captureMode: remoteType, captureError: null,
           actions: [this._defaultAction()],
-          name: "IR " + b.id.replace("_", " ") };
+          name: label };
     }
     this._wiz.activeAction = 0;
     if (this._wiz.step === undefined) this._wiz.step = 1;
@@ -806,12 +821,8 @@ class BroadlinkIRPanel extends HTMLElement {
 
   _stepCapture() {
     const w = this._wiz;
-    const devType = this._entries[this._activeEntry]?.dev_type || 0;
-    const isRF = BroadlinkIRPanel.RF_DEVTYPES.has(devType);
-    const modeToggle = isRF ? `<div class="mode-tabs" style="margin-bottom:14px">
-      <div class="mode-tab ${(w.captureMode||"ir") === "ir" ? "on" : ""}" data-cap="ir">IR</div>
-      <div class="mode-tab ${w.captureMode === "rf" ? "on" : ""}" data-cap="rf">RF</div>
-    </div>` : "";
+    const rType = (w.captureMode || "ir").toUpperCase();
+    const modeBadge = `<div style="text-align:center;margin-bottom:10px"><span class="badge ${w.captureMode === "rf" ? "rf" : "ir"}" style="font-size:11px;padding:2px 10px">${rType} Remote</span></div>`;
 
     if (w.capturing) {
       const isRFcap = w.captureMode === "rf";
@@ -829,17 +840,17 @@ class BroadlinkIRPanel extends HTMLElement {
         rfGuide = `<div style="font-size:16px">Now receiving IR…</div>
           <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">Press the <b>${this._esc(this._label(w.button))}</b> button on your physical remote</div>`;
       }
-      return `${modeToggle}<div class="capture-box"><div class="pulse">${isRFcap ? "📻" : "📡"}</div>
+      return `${modeBadge}<div class="capture-box"><div class="pulse">${isRFcap ? "📻" : "📡"}</div>
         ${rfGuide}</div>
         <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button></div>`;
     }
 
-    if (w.captureError) return `${modeToggle}<div class="capture-box"><div style="color:#f44336;font-size:16px">Capture failed</div>
+    if (w.captureError) return `${modeBadge}<div class="capture-box"><div style="color:#f44336;font-size:16px">Capture failed</div>
       <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">${this._esc(w.captureError)}</div></div>
       <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button><button class="btn primary" id="wzRetry">Retry</button></div>`;
 
     const proto = w.captureMode === "rf" ? "RF" : "NEC";
-    return `${modeToggle}<div class="capture-box"><div style="color:var(--secondary-text-color);font-size:13px">Captured ${w.captureMode === "rf" ? "RF" : "IR"} code</div>
+    return `${modeBadge}<div class="capture-box"><div style="color:var(--secondary-text-color);font-size:13px">Captured ${w.captureMode === "rf" ? "RF" : "IR"} code</div>
       <div class="code-result">${this._esc(w.ir_code)}</div><div style="color:var(--secondary-text-color);font-size:12px">protocol: ${proto}</div></div>
       <div class="row-btns"><button class="btn ghost" id="wzRetry">Retry</button><button class="btn primary" id="wzNext">Next →</button></div>`;
   }
@@ -925,12 +936,6 @@ class BroadlinkIRPanel extends HTMLElement {
       if (retry) retry.addEventListener("click", () => { w.step = 1; w.captureError = null; this._startCapture(); });
       const next = this._$("wzNext");
       if (next) next.addEventListener("click", () => { w.step = 2; this._renderWizard(); });
-      this.shadowRoot.querySelectorAll("[data-cap]").forEach(t => t.addEventListener("click", () => {
-        w.captureMode = t.dataset.cap;
-        w.captureError = null;
-        this._cancelCapture();
-        this._startCapture();
-      }));
     } else if (w.step === 2) {
       this.shadowRoot.querySelectorAll("[data-amode]").forEach(t => t.addEventListener("click", () => {
         const idx = parseInt(t.dataset.actidx);

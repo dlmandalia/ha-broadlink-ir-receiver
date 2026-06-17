@@ -2,6 +2,17 @@
 
 All notable changes to the BroadLink IR Receiver integration.
 
+## [2.7.0] - 2025-06-17
+
+### Added
+- Remote type selection: each remote is now tagged as IR or RF when created
+- 2-phase guided RF capture: Phase 1 (hold button for frequency sweep) → Phase 2 (short-press for code capture)
+- Remote type badge shown in selector dropdown and heading
+
+### Changed
+- Wizard capture mode determined by remote type — no manual IR/RF toggle in wizard
+- RF capture split into two WS commands (`rf_sweep` + `rf_capture`) for step-by-step user guidance
+
 ## [2.6.0] - 2025-06-17
 
 ### Added
