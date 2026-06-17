@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import threading
 import time
@@ -500,29 +501,53 @@ async def ws_rf_sweep(hass, connection, msg):
     if dev is None:
         return
 
+    listener = data["listener"]
+    was_enabled = listener.enabled
+    if was_enabled:
+        listener.enabled = False
+        await asyncio.sleep(0.5)
+
     def _sweep():
         import time as _time
+        _LOGGER.info("RF sweep started on %s", msg["entry_id"])
         dev.sweep_frequency()
         deadline = _time.monotonic() + 15
         while _time.monotonic() < deadline:
             _time.sleep(0.25)
-            found, freq = dev.check_frequency()
-            if found:
-                return freq
+            try:
+                result = dev.check_frequency()
+            except Exception as ex:
+                _LOGGER.warning("check_frequency error: %s", ex)
+                continue
+            _LOGGER.debug("check_frequency raw: %s (type=%s)", result, type(result))
+            if isinstance(result, tuple):
+                found, freq = result
+                if found and freq > 100:
+                    _LOGGER.info("RF frequency found: %.2f MHz", freq)
+                    return freq
+            elif result:
+                _LOGGER.warning("check_frequency returned non-tuple: %s", result)
         dev.cancel_sweep_frequency()
+        _LOGGER.info("RF sweep timed out — no frequency found")
         return None
 
     try:
         freq = await hass.async_add_executor_job(_sweep)
     except Exception as exc:
+        _LOGGER.error("RF sweep exception: %s", exc)
+        if was_enabled:
+            listener.enabled = True
         connection.send_error(msg["id"], "rf_error", str(exc))
         return
 
     if freq is None:
+        if was_enabled:
+            listener.enabled = True
         connection.send_error(msg["id"], "rf_timeout", "No RF frequency detected — hold the button longer")
         return
 
     data["_rf_frequency"] = freq
+    data["_rf_restore_listener"] = was_enabled
     connection.send_result(msg["id"], {"status": "frequency_found", "frequency": round(freq, 2)})
 
 
@@ -540,9 +565,11 @@ async def ws_rf_capture(hass, connection, msg):
         return
 
     freq = data.get("_rf_frequency")
+    _LOGGER.info("RF capture phase 2: freq=%s for %s", freq, msg["entry_id"])
 
     def _capture():
         import time as _time
+        _LOGGER.info("Calling find_rf_packet(freq=%s)", freq)
         dev.find_rf_packet(freq)
         deadline = _time.monotonic() + 10
         while _time.monotonic() < deadline:
@@ -550,16 +577,27 @@ async def ws_rf_capture(hass, connection, msg):
             try:
                 rf_data = dev.check_data()
                 if rf_data:
+                    _LOGGER.info("RF packet captured: %d bytes", len(rf_data))
                     return rf_data
-            except Exception:
+            except Exception as ex:
+                _LOGGER.debug("check_data: %s", ex)
                 continue
+        _LOGGER.info("RF capture timed out")
         return None
+
+    def _restore():
+        if data.get("_rf_restore_listener"):
+            data["listener"].enabled = True
+            data.pop("_rf_restore_listener", None)
 
     try:
         rf_data = await hass.async_add_executor_job(_capture)
     except Exception as exc:
+        _restore()
         connection.send_error(msg["id"], "rf_error", str(exc))
         return
+
+    _restore()
 
     if not rf_data:
         connection.send_error(msg["id"], "rf_timeout", "RF packet capture timed out — press button again")
@@ -595,7 +633,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "broadlink-ir-panel",
-                "module_url": f"/api/{DOMAIN}/panel.js?v=272",
+                "module_url": f"/api/{DOMAIN}/panel.js?v=273",
             }
         },
         require_admin=False,
