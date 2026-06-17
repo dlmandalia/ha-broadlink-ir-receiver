@@ -498,7 +498,7 @@ class BroadlinkIRPanel extends HTMLElement {
           <button class="dev-menu-btn" data-menu="${id}">⋮</button>
           <div class="dev-menu-drop" id="menu-${id}">
             <button data-toggle="${id}">${e.enabled ? "Receiver off" : "Receiver on"}</button>
-            ${e.rf_capable ? `<button data-togglerf="${id}">${e.rf_enabled ? "RF listener off" : "RF listener on"}</button>` : ""}
+            ${e.rf_capable ? `<button data-togglerf="${id}">${e.rf_enabled ? "RF off (IR stays on)" : "RF on (IR+RF)"}</button>` : ""}
             <button data-notif="${id}">${this._isNotifOn(id) ? "Notifications off" : "Notifications on"}</button>
             <button class="danger" data-remove="${id}">Remove device</button>
           </div>
@@ -545,7 +545,7 @@ class BroadlinkIRPanel extends HTMLElement {
         const id = btn.dataset.togglerf;
         const on = !(this._entries[id]?.rf_enabled);
         try {
-          await this._ws({ type: "broadlink_ir_receiver/toggle_rf", entry_id: id, enabled: on });
+          await this._hass.connection.sendMessagePromise({ type: "broadlink_ir_receiver/toggle_rf", entry_id: id, enabled: on });
           this._entries[id].rf_enabled = on;
           this._toast(on ? "RF listener on" : "RF listener off");
           this._renderTopbar();
