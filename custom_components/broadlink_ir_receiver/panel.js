@@ -17,7 +17,7 @@ class BroadlinkIRPanel extends HTMLElement {
   }
 
   static get RF_DEVTYPES() {
-    return new Set([0x51DA,0x61A2,0x649B,0x653C,0x653A,0x6508,0x6539,0x648D,0x6184,0x6070,0x610E,0x610F,0x62BC,0x62BE,0x6364,0x6476]);
+    return new Set([0x520B,0x51DA,0x61A2,0x649B,0x653C,0x653A,0x6508,0x6539,0x648D,0x6184,0x6070,0x610E,0x610F,0x62BC,0x62BE,0x6364,0x6476]);
   }
 
   set hass(hass) {
@@ -484,8 +484,9 @@ class BroadlinkIRPanel extends HTMLElement {
     let html = ids.map(id => {
       const e = this._entries[id];
       const active = id === this._activeEntry;
+      const rfOn = e.rf_capable && e.rf_enabled;
       const typeBadge = isRF(e.dev_type)
-        ? '<span class="badge rf" style="font-size:9px;padding:1px 5px">IR+RF</span>'
+        ? `<span class="badge rf" style="font-size:9px;padding:1px 5px">IR+RF${rfOn ? " ⚡" : ""}</span>`
         : '<span class="badge ir" style="font-size:9px;padding:1px 5px">IR</span>';
       return `<div class="dev-chip ${active ? "active" : ""}" data-eid="${id}">
         <div class="dev-dot ${e.enabled ? "on" : "off"}"></div>
@@ -497,6 +498,7 @@ class BroadlinkIRPanel extends HTMLElement {
           <button class="dev-menu-btn" data-menu="${id}">⋮</button>
           <div class="dev-menu-drop" id="menu-${id}">
             <button data-toggle="${id}">${e.enabled ? "Receiver off" : "Receiver on"}</button>
+            ${e.rf_capable ? `<button data-togglerf="${id}">${e.rf_enabled ? "RF listener off" : "RF listener on"}</button>` : ""}
             <button data-notif="${id}">${this._isNotifOn(id) ? "Notifications off" : "Notifications on"}</button>
             <button class="danger" data-remove="${id}">Remove device</button>
           </div>
@@ -535,6 +537,21 @@ class BroadlinkIRPanel extends HTMLElement {
         const id = btn.dataset.toggle;
         const on = !(this._entries[id]?.enabled);
         this._toggleEntry(id, on);
+      });
+    });
+
+    el.querySelectorAll("[data-togglerf]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.togglerf;
+        const on = !(this._entries[id]?.rf_enabled);
+        try {
+          await this._ws({ type: "broadlink_ir_receiver/toggle_rf", entry_id: id, enabled: on });
+          this._entries[id].rf_enabled = on;
+          this._toast(on ? "RF listener on" : "RF listener off");
+          this._renderTopbar();
+        } catch (e) {
+          this._toast("RF toggle failed: " + (e.message || "unknown"));
+        }
       });
     });
 
