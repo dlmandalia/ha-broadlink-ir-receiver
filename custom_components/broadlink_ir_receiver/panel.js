@@ -856,13 +856,16 @@ class BroadlinkIRPanel extends HTMLElement {
       }
 
       if (isRFcap && phase === 2 && w.rfWaiting) {
-        const freqStr = w.rfFrequency ? `<b>${w.rfFrequency} MHz</b>` : "detected";
+        const freq = w.rfFrequency;
+        const freqStr = freq ? `<b>${freq} MHz</b>` : "unknown";
+        const bandHint = freq >= 430 && freq <= 440 ? "433 MHz band" : freq >= 310 && freq <= 320 ? "315 MHz band" : freq >= 385 && freq <= 395 ? "390 MHz band" : "";
         return `${modeBadge}<div class="capture-box">
           <div style="font-size:36px;margin-bottom:8px">✅</div>
-          <div style="font-size:18px;font-weight:600;color:#4caf50">Frequency found: ${freqStr}</div>
-          <div style="color:var(--secondary-text-color);font-size:13px;margin-top:10px">Now <b>short-press</b> the <b>${btnName}</b> button <b>once</b> and click the button below.</div>
+          <div style="font-size:18px;font-weight:600;color:#4caf50">Frequency: ${freqStr}</div>
+          ${bandHint ? `<div style="color:var(--secondary-text-color);font-size:12px">${bandHint}</div>` : ""}
+          <div style="color:var(--secondary-text-color);font-size:13px;margin-top:12px">If this looks correct, <b>short-press</b> the <b>${btnName}</b> button <b>once</b> then click <b>Capture</b>.</div>
           <div style="color:var(--secondary-text-color);font-size:11px;margin-top:4px">A single quick press — do not hold this time.</div></div>
-          <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button><button class="btn primary" id="wzRfCapture">Capture RF Code →</button></div>`;
+          <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button><button class="btn ghost" id="wzRfRetry">Retry Sweep</button><button class="btn primary" id="wzRfCapture">Capture RF Code →</button></div>`;
       }
 
       if (isRFcap && phase === 3) {
@@ -971,6 +974,8 @@ class BroadlinkIRPanel extends HTMLElement {
       if (next) next.addEventListener("click", () => { w.step = 2; this._renderWizard(); });
       const rfCap = this._$("wzRfCapture");
       if (rfCap) rfCap.addEventListener("click", () => { this._startRfPacketCapture(); });
+      const rfRetry = this._$("wzRfRetry");
+      if (rfRetry) rfRetry.addEventListener("click", () => { w.rfWaiting = false; w.rfFrequency = null; this._startRfCapture(); });
     } else if (w.step === 2) {
       this.shadowRoot.querySelectorAll("[data-amode]").forEach(t => t.addEventListener("click", () => {
         const idx = parseInt(t.dataset.actidx);

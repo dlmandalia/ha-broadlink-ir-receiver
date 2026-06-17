@@ -507,6 +507,13 @@ async def ws_rf_sweep(hass, connection, msg):
         listener.enabled = False
         await asyncio.sleep(0.5)
 
+    def _is_valid_rf_freq(freq):
+        """Check if frequency is in a known RF remote band."""
+        for center in (310, 315, 390, 418, 433.92):
+            if abs(freq - center) < 10:
+                return True
+        return False
+
     def _sweep():
         import time as _time
         _LOGGER.info("RF sweep started on %s", msg["entry_id"])
@@ -522,13 +529,15 @@ async def ws_rf_sweep(hass, connection, msg):
             _LOGGER.debug("check_frequency raw: %s (type=%s)", result, type(result))
             if isinstance(result, tuple):
                 found, freq = result
-                if found and freq > 100:
-                    _LOGGER.info("RF frequency found: %.2f MHz", freq)
-                    return freq
+                if found:
+                    if _is_valid_rf_freq(freq):
+                        _LOGGER.info("RF frequency found: %.2f MHz", freq)
+                        return freq
+                    _LOGGER.warning("Ignoring invalid frequency %.2f MHz (noise)", freq)
             elif result:
                 _LOGGER.warning("check_frequency returned non-tuple: %s", result)
         dev.cancel_sweep_frequency()
-        _LOGGER.info("RF sweep timed out — no frequency found")
+        _LOGGER.info("RF sweep timed out — no valid frequency found")
         return None
 
     try:
@@ -633,7 +642,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "broadlink-ir-panel",
-                "module_url": f"/api/{DOMAIN}/panel.js?v=273",
+                "module_url": f"/api/{DOMAIN}/panel.js?v=274",
             }
         },
         require_admin=False,
