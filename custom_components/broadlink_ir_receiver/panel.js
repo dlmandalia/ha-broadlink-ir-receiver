@@ -484,9 +484,10 @@ class BroadlinkIRPanel extends HTMLElement {
     let html = ids.map(id => {
       const e = this._entries[id];
       const active = id === this._activeEntry;
-      const rfOn = e.rf_capable && e.rf_enabled;
+      const lm = e.listen_mode || "ir";
+      const modeLabel = lm === "both" ? "IR+RF" : lm === "rf" ? "RF" : "IR";
       const typeBadge = isRF(e.dev_type)
-        ? `<span class="badge rf" style="font-size:9px;padding:1px 5px">IR+RF${rfOn ? " ⚡" : ""}</span>`
+        ? `<span class="badge rf" style="font-size:9px;padding:1px 5px">${modeLabel}${lm !== "ir" ? " ⚡" : ""}</span>`
         : '<span class="badge ir" style="font-size:9px;padding:1px 5px">IR</span>';
       return `<div class="dev-chip ${active ? "active" : ""}" data-eid="${id}">
         <div class="dev-dot ${e.enabled ? "on" : "off"}"></div>
@@ -498,7 +499,13 @@ class BroadlinkIRPanel extends HTMLElement {
           <button class="dev-menu-btn" data-menu="${id}">⋮</button>
           <div class="dev-menu-drop" id="menu-${id}">
             <button data-toggle="${id}">${e.enabled ? "Receiver off" : "Receiver on"}</button>
-            ${e.rf_capable ? `<button data-togglerf="${id}">${e.rf_enabled ? "RF off (IR stays on)" : "RF on (IR+RF)"}</button>` : ""}
+            ${e.rf_capable ? `<div style="padding:4px 8px;font-size:12px">
+              Listen: <select data-listenmode="${id}">
+                <option value="ir"${lm==="ir"?" selected":""}>IR only</option>
+                <option value="rf"${lm==="rf"?" selected":""}>RF only</option>
+                <option value="both"${lm==="both"?" selected":""}>IR + RF</option>
+              </select>
+            </div>` : ""}
             <button data-notif="${id}">${this._isNotifOn(id) ? "Notifications off" : "Notifications on"}</button>
             <button class="danger" data-remove="${id}">Remove device</button>
           </div>
@@ -540,17 +547,17 @@ class BroadlinkIRPanel extends HTMLElement {
       });
     });
 
-    el.querySelectorAll("[data-togglerf]").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const id = btn.dataset.togglerf;
-        const on = !(this._entries[id]?.rf_enabled);
+    el.querySelectorAll("[data-listenmode]").forEach(sel => {
+      sel.addEventListener("change", async () => {
+        const id = sel.dataset.listenmode;
+        const mode = sel.value;
         try {
-          await this._hass.connection.sendMessagePromise({ type: "broadlink_ir_receiver/toggle_rf", entry_id: id, enabled: on });
-          this._entries[id].rf_enabled = on;
-          this._toast(on ? "RF listener on" : "RF listener off");
+          await this._hass.connection.sendMessagePromise({ type: "broadlink_ir_receiver/set_listen_mode", entry_id: id, mode });
+          this._entries[id].listen_mode = mode;
+          this._toast(`Listen mode: ${mode}`);
           this._renderTopbar();
         } catch (e) {
-          this._toast("RF toggle failed: " + (e.message || "unknown"));
+          this._toast("Mode change failed: " + (e.message || "unknown"));
         }
       });
     });

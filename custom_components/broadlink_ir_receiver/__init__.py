@@ -65,7 +65,7 @@ class BroadlinkIRListener:
         self._thread: threading.Thread | None = None
         self._dev = None
         self._enabled = True
-        self._rf_enabled = False
+        self._listen_mode = "ir"
 
     @property
     def enabled(self) -> bool:
@@ -75,19 +75,23 @@ class BroadlinkIRListener:
     def enabled(self, value: bool) -> None:
         self._enabled = value
         _LOGGER.info(
-            "IR listener %s for %s", "enabled" if value else "disabled", self._name
+            "Listener %s for %s", "enabled" if value else "disabled", self._name
         )
 
     @property
-    def rf_enabled(self) -> bool:
-        return self._rf_enabled
+    def listen_mode(self) -> str:
+        return self._listen_mode
 
-    @rf_enabled.setter
-    def rf_enabled(self, value: bool) -> None:
-        self._rf_enabled = value
-        _LOGGER.info(
-            "RF listener %s for %s", "enabled" if value else "disabled", self._name
-        )
+    @listen_mode.setter
+    def listen_mode(self, value: str) -> None:
+        if value not in ("ir", "rf", "both"):
+            value = "ir"
+        self._listen_mode = value
+        _LOGGER.info("Listen mode → %s for %s", value, self._name)
+
+    @property
+    def rf_enabled(self) -> bool:
+        return self._listen_mode in ("rf", "both")
 
     @property
     def host(self) -> str:
@@ -162,76 +166,35 @@ class BroadlinkIRListener:
                 continue
 
             self._drain_buffer()
-            _LOGGER.info("Listening for IR codes on %s", self._name)
+            _LOGGER.info("Listening on %s (mode=%s)", self._name, self._listen_mode)
 
             last_code = None
             last_time = 0.0
             learning = False
-            rf_phase = None
-            rf_cycle = 0
+            is_rf_capable = self._dev_type in RF_CAPABLE_DEVTYPES
 
             while not self._stop_event.is_set():
                 if not self._enabled:
                     learning = False
-                    rf_phase = None
                     break
 
-                is_rf_capable = self._dev_type in RF_CAPABLE_DEVTYPES
-                want_rf = self._rf_enabled and is_rf_capable
+                mode = self._listen_mode if is_rf_capable else "ir"
 
                 try:
-                    if want_rf and rf_phase is None:
-                        rf_cycle += 1
-                        if rf_cycle % 50 == 0:
-                            try:
-                                self._dev.sweep_frequency()
-                                rf_phase = "sweep"
-                                learning = False
-                                _LOGGER.debug("RF sweep started on %s", self._name)
-                            except Exception as exc:
-                                _LOGGER.debug("RF sweep failed: %s", exc)
-                                rf_phase = None
-
-                    if rf_phase == "sweep":
-                        self._stop_event.wait(0.2)
-                        if self._stop_event.is_set():
-                            break
-                        try:
-                            if self._dev.check_frequency():
-                                self._dev.find_rf_packet()
-                                rf_phase = "capture"
-                                _LOGGER.debug("RF frequency found, capturing on %s", self._name)
-                            else:
-                                rf_cycle += 1
-                                if rf_cycle > 60:
-                                    self._dev.cancel_sweep_frequency()
-                                    rf_phase = None
-                                    rf_cycle = 0
-                        except Exception:
-                            rf_phase = None
-                            rf_cycle = 0
+                    # --- RF-only mode: continuous sweep ---
+                    if mode == "rf":
+                        learning = False
+                        data = self._rf_listen_cycle()
+                        if data:
+                            code_key = data[:8].hex()
+                            now = time.monotonic()
+                            if code_key != last_code or (now - last_time) >= DEFAULT_DEBOUNCE:
+                                last_code = code_key
+                                last_time = now
+                                self._fire_event(nec_code=None, raw_data=data, protocol="RF")
                         continue
 
-                    if rf_phase == "capture":
-                        self._stop_event.wait(0.2)
-                        if self._stop_event.is_set():
-                            break
-                        try:
-                            data = self._dev.check_data()
-                            if data:
-                                rf_phase = None
-                                rf_cycle = 0
-                                code_key = data[:8].hex()
-                                now = time.monotonic()
-                                if code_key != last_code or (now - last_time) >= DEFAULT_DEBOUNCE:
-                                    last_code = code_key
-                                    last_time = now
-                                    self._fire_event(nec_code=None, raw_data=data, protocol="RF")
-                        except Exception:
-                            rf_phase = None
-                            rf_cycle = 0
-                        continue
-
+                    # --- IR mode (also handles "both" with IR as primary) ---
                     if not learning:
                         try:
                             self._dev.enter_learning()
@@ -289,14 +252,67 @@ class BroadlinkIRListener:
                     _LOGGER.warning("Device %s offline, reconnecting...", self._name)
                     self._stop_event.wait(10)
                     learning = False
-                    rf_phase = None
                     break
 
                 except Exception:
                     _LOGGER.exception("Error in listener for %s", self._name)
                     self._stop_event.wait(2)
                     learning = False
-                    rf_phase = None
+
+    def _rf_listen_cycle(self) -> bytes | None:
+        """One RF sweep+capture cycle. Returns RF data or None."""
+        try:
+            self._dev.sweep_frequency()
+        except Exception:
+            self._stop_event.wait(1)
+            return None
+
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            self._stop_event.wait(0.2)
+            if self._stop_event.is_set() or not self._enabled:
+                try:
+                    self._dev.cancel_sweep_frequency()
+                except Exception:
+                    pass
+                return None
+            if self._listen_mode != "rf":
+                try:
+                    self._dev.cancel_sweep_frequency()
+                except Exception:
+                    pass
+                return None
+            try:
+                if self._dev.check_frequency():
+                    break
+            except Exception:
+                return None
+        else:
+            try:
+                self._dev.cancel_sweep_frequency()
+            except Exception:
+                pass
+            return None
+
+        try:
+            self._dev.find_rf_packet()
+        except Exception:
+            return None
+
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            self._stop_event.wait(0.2)
+            if self._stop_event.is_set() or not self._enabled:
+                return None
+            if self._listen_mode != "rf":
+                return None
+            try:
+                data = self._dev.check_data()
+                if data:
+                    return data
+            except Exception:
+                continue
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +333,7 @@ async def ws_get_state(hass, connection, msg):
         dt = data.get("dev_type", 0)
         entries[entry_id] = {
             "enabled": listener.enabled,
-            "rf_enabled": listener.rf_enabled,
+            "listen_mode": listener.listen_mode,
             "rf_capable": dt in RF_CAPABLE_DEVTYPES,
             "host": listener.host,
             "name": listener.name,
@@ -346,23 +362,27 @@ async def ws_toggle(hass, connection, msg):
 
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "broadlink_ir_receiver/toggle_rf",
+        vol.Required("type"): "broadlink_ir_receiver/set_listen_mode",
         vol.Required("entry_id"): str,
-        vol.Required("enabled"): bool,
+        vol.Required("mode"): str,
     }
 )
 @websocket_api.async_response
-async def ws_toggle_rf(hass, connection, msg):
+async def ws_set_listen_mode(hass, connection, msg):
     data = hass.data.get(DOMAIN, {}).get(msg["entry_id"])
     if not data or "listener" not in data:
         connection.send_error(msg["id"], "not_found", "Entry not found")
         return
+    mode = msg["mode"]
+    if mode not in ("ir", "rf", "both"):
+        connection.send_error(msg["id"], "invalid_mode", "Mode must be ir, rf, or both")
+        return
     dt = data.get("dev_type", 0)
-    if dt not in RF_CAPABLE_DEVTYPES:
+    if mode in ("rf", "both") and dt not in RF_CAPABLE_DEVTYPES:
         connection.send_error(msg["id"], "not_supported", "Device does not support RF")
         return
-    data["listener"].rf_enabled = msg["enabled"]
-    connection.send_result(msg["id"], {"rf_enabled": msg["enabled"]})
+    data["listener"].listen_mode = mode
+    connection.send_result(msg["id"], {"listen_mode": mode})
 
 
 @websocket_api.websocket_command(
@@ -539,7 +559,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "broadlink-ir-panel",
-                "module_url": f"/api/{DOMAIN}/panel.js?v=251",
+                "module_url": f"/api/{DOMAIN}/panel.js?v=252",
             }
         },
         require_admin=False,
@@ -566,7 +586,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if "_panel_registered" not in hass.data[DOMAIN]:
         websocket_api.async_register_command(hass, ws_get_state)
         websocket_api.async_register_command(hass, ws_toggle)
-        websocket_api.async_register_command(hass, ws_toggle_rf)
+        websocket_api.async_register_command(hass, ws_set_listen_mode)
         websocket_api.async_register_command(hass, ws_clear_codes)
         websocket_api.async_register_command(hass, ws_get_config)
         websocket_api.async_register_command(hass, ws_set_config)
