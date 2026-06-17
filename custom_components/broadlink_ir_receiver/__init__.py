@@ -509,8 +509,8 @@ async def ws_rf_sweep(hass, connection, msg):
 
     def _is_valid_rf_freq(freq):
         """Check if frequency is in a known RF remote band."""
-        for center in (310, 315, 390, 418, 433.92):
-            if abs(freq - center) < 10:
+        for center in (315, 390, 418, 433.92):
+            if abs(freq - center) < 5:
                 return True
         return False
 
@@ -642,7 +642,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "broadlink-ir-panel",
-                "module_url": f"/api/{DOMAIN}/panel.js?v=274",
+                "module_url": f"/api/{DOMAIN}/panel.js?v=275",
             }
         },
         require_admin=False,
