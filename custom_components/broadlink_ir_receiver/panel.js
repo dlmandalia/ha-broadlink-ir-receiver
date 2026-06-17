@@ -1046,8 +1046,30 @@ class BroadlinkIRPanel extends HTMLElement {
     remote.mappings = remote.mappings.filter(m => m.id !== rec.id && m.button !== rec.button).concat(rec);
     this._wiz = null;
     this._saveConfig();
+
+    const rType = (remote.type || "ir").toLowerCase();
+    if (rType === "rf" && this._activeEntry) {
+      const e = this._entries[this._activeEntry];
+      const lm = e?.listen_mode || "ir";
+      if (lm === "ir") {
+        this._hass.connection.sendMessagePromise({
+          type: "broadlink_ir_receiver/set_listen_mode",
+          entry_id: this._activeEntry, mode: "both"
+        }).then(() => {
+          if (e) e.listen_mode = "both";
+          this._toast("Saved — listen mode switched to IR+RF");
+          this._renderTopbar();
+        }).catch(() => {
+          this._toast("Saved — but switch listen mode to RF or Both manually");
+        });
+      } else {
+        this._toast("Saved — mapping active immediately");
+      }
+    } else {
+      this._toast("Saved — mapping active immediately");
+    }
+
     this._renderAll();
-    this._toast("Saved — mapping active immediately");
   }
 
   // --- log ---

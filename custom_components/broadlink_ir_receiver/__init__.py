@@ -195,7 +195,25 @@ class BroadlinkIRListener:
                                 self._fire_event(nec_code=None, raw_data=data, protocol="RF")
                         continue
 
-                    # --- IR mode (also handles "both" with IR as primary) ---
+                    # --- Both mode: alternate IR + RF ---
+                    if mode == "both":
+                        if not hasattr(self, "_both_ir_count"):
+                            self._both_ir_count = 0
+                        self._both_ir_count += 1
+                        if self._both_ir_count >= 20:
+                            self._both_ir_count = 0
+                            learning = False
+                            data = self._rf_listen_cycle()
+                            if data:
+                                code_key = data[:8].hex()
+                                now = time.monotonic()
+                                if code_key != last_code or (now - last_time) >= DEFAULT_DEBOUNCE:
+                                    last_code = code_key
+                                    last_time = now
+                                    self._fire_event(nec_code=None, raw_data=data, protocol="RF")
+                            continue
+
+                    # --- IR mode (and IR phase of "both") ---
                     if not learning:
                         try:
                             self._dev.enter_learning()
@@ -642,7 +660,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "broadlink-ir-panel",
-                "module_url": f"/api/{DOMAIN}/panel.js?v=275",
+                "module_url": f"/api/{DOMAIN}/panel.js?v=276",
             }
         },
         require_admin=False,
