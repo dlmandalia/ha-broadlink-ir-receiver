@@ -283,7 +283,8 @@ class BroadlinkIRListener:
                     pass
                 return None
             try:
-                if self._dev.check_frequency():
+                found, freq = self._dev.check_frequency()
+                if found:
                     break
             except Exception:
                 return None
@@ -295,7 +296,7 @@ class BroadlinkIRListener:
             return None
 
         try:
-            self._dev.find_rf_packet()
+            self._dev.find_rf_packet(freq)
         except Exception:
             return None
 
@@ -505,22 +506,24 @@ async def ws_rf_sweep(hass, connection, msg):
         deadline = _time.monotonic() + 15
         while _time.monotonic() < deadline:
             _time.sleep(0.25)
-            if dev.check_frequency():
-                return True
+            found, freq = dev.check_frequency()
+            if found:
+                return freq
         dev.cancel_sweep_frequency()
-        return False
+        return None
 
     try:
-        found = await hass.async_add_executor_job(_sweep)
+        freq = await hass.async_add_executor_job(_sweep)
     except Exception as exc:
         connection.send_error(msg["id"], "rf_error", str(exc))
         return
 
-    if not found:
+    if freq is None:
         connection.send_error(msg["id"], "rf_timeout", "No RF frequency detected — hold the button longer")
         return
 
-    connection.send_result(msg["id"], {"status": "frequency_found"})
+    data["_rf_frequency"] = freq
+    connection.send_result(msg["id"], {"status": "frequency_found", "frequency": round(freq, 2)})
 
 
 @websocket_api.websocket_command(
@@ -536,9 +539,11 @@ async def ws_rf_capture(hass, connection, msg):
     if dev is None:
         return
 
+    freq = data.get("_rf_frequency")
+
     def _capture():
         import time as _time
-        dev.find_rf_packet()
+        dev.find_rf_packet(freq)
         deadline = _time.monotonic() + 10
         while _time.monotonic() < deadline:
             _time.sleep(0.25)
@@ -590,7 +595,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "broadlink-ir-panel",
-                "module_url": f"/api/{DOMAIN}/panel.js?v=270",
+                "module_url": f"/api/{DOMAIN}/panel.js?v=271",
             }
         },
         require_admin=False,

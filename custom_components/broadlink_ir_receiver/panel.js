@@ -248,12 +248,14 @@ class BroadlinkIRPanel extends HTMLElement {
 
   async _startRfCapture() {
     this._wiz.rfPhase = 1;
+    this._wiz.rfFrequency = null;
     this._renderWizard();
     try {
-      await this._hass.connection.sendMessagePromise({
+      const r = await this._hass.connection.sendMessagePromise({
         type: "broadlink_ir_receiver/rf_sweep",
         entry_id: this._activeEntry,
       });
+      this._wiz.rfFrequency = r.frequency;
     } catch (e) {
       this._wiz.capturing = false;
       this._wiz.captureError = e.message || "Frequency scan failed";
@@ -261,6 +263,13 @@ class BroadlinkIRPanel extends HTMLElement {
       return;
     }
     this._wiz.rfPhase = 2;
+    this._wiz.rfWaiting = true;
+    this._renderWizard();
+  }
+
+  async _startRfPacketCapture() {
+    this._wiz.rfWaiting = false;
+    this._wiz.rfPhase = 3;
     this._renderWizard();
     try {
       const r = await this._hass.connection.sendMessagePromise({
@@ -824,24 +833,39 @@ class BroadlinkIRPanel extends HTMLElement {
     const rType = (w.captureMode || "ir").toUpperCase();
     const modeBadge = `<div style="text-align:center;margin-bottom:10px"><span class="badge ${w.captureMode === "rf" ? "rf" : "ir"}" style="font-size:11px;padding:2px 10px">${rType} Remote</span></div>`;
 
-    if (w.capturing) {
+    if (w.capturing || w.rfWaiting) {
       const isRFcap = w.captureMode === "rf";
       const phase = w.rfPhase || 0;
-      let rfGuide = "";
+      const btnName = this._esc(this._label(w.button));
+
       if (isRFcap && phase === 1) {
-        rfGuide = `<div style="font-size:16px;font-weight:600">Step 1: Finding frequency…</div>
-          <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px"><b>Hold down</b> the <b>${this._esc(this._label(w.button))}</b> button on your remote (keep holding for 3-5 seconds)</div>
-          <div style="color:var(--secondary-text-color);font-size:11px;margin-top:4px">The device is scanning for the RF frequency your remote uses.</div>`;
-      } else if (isRFcap && phase === 2) {
-        rfGuide = `<div style="font-size:16px;font-weight:600;color:#4caf50">Frequency found!</div>
-          <div style="font-size:15px;margin-top:10px">Step 2: Capturing code…</div>
-          <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">Now <b>short-press</b> the <b>${this._esc(this._label(w.button))}</b> button once</div>`;
-      } else {
-        rfGuide = `<div style="font-size:16px">Now receiving IR…</div>
-          <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">Press the <b>${this._esc(this._label(w.button))}</b> button on your physical remote</div>`;
+        return `${modeBadge}<div class="capture-box"><div class="pulse">📻</div>
+          <div style="font-size:16px;font-weight:600">Step 1: Scanning for frequency…</div>
+          <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px"><b>Hold down</b> the <b>${btnName}</b> button on your remote</div>
+          <div style="color:var(--secondary-text-color);font-size:11px;margin-top:4px">Keep holding for 3-5 seconds while the device scans.</div></div>
+          <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button></div>`;
       }
-      return `${modeBadge}<div class="capture-box"><div class="pulse">${isRFcap ? "📻" : "📡"}</div>
-        ${rfGuide}</div>
+
+      if (isRFcap && phase === 2 && w.rfWaiting) {
+        const freqStr = w.rfFrequency ? `<b>${w.rfFrequency} MHz</b>` : "detected";
+        return `${modeBadge}<div class="capture-box">
+          <div style="font-size:36px;margin-bottom:8px">✅</div>
+          <div style="font-size:18px;font-weight:600;color:#4caf50">Frequency found: ${freqStr}</div>
+          <div style="color:var(--secondary-text-color);font-size:13px;margin-top:10px">Now <b>short-press</b> the <b>${btnName}</b> button <b>once</b> and click the button below.</div>
+          <div style="color:var(--secondary-text-color);font-size:11px;margin-top:4px">A single quick press — do not hold this time.</div></div>
+          <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button><button class="btn primary" id="wzRfCapture">Capture RF Code →</button></div>`;
+      }
+
+      if (isRFcap && phase === 3) {
+        return `${modeBadge}<div class="capture-box"><div class="pulse">📻</div>
+          <div style="font-size:16px;font-weight:600">Step 2: Capturing RF code…</div>
+          <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">Press the <b>${btnName}</b> button now if you haven't already.</div></div>
+          <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button></div>`;
+      }
+
+      return `${modeBadge}<div class="capture-box"><div class="pulse">📡</div>
+        <div style="font-size:16px">Now receiving IR…</div>
+        <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">Press the <b>${btnName}</b> button on your physical remote</div></div>
         <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button></div>`;
     }
 
@@ -931,11 +955,13 @@ class BroadlinkIRPanel extends HTMLElement {
     const w = this._wiz;
     if (w.step === 1) {
       const cancel = this._$("wzCancel");
-      if (cancel) cancel.addEventListener("click", () => { this._cancelCapture(); this._wiz = null; this._renderAll(); });
+      if (cancel) cancel.addEventListener("click", () => { this._cancelCapture(); this._wiz.rfWaiting = false; this._wiz = null; this._renderAll(); });
       const retry = this._$("wzRetry");
-      if (retry) retry.addEventListener("click", () => { w.step = 1; w.captureError = null; this._startCapture(); });
+      if (retry) retry.addEventListener("click", () => { w.step = 1; w.captureError = null; w.rfWaiting = false; this._startCapture(); });
       const next = this._$("wzNext");
       if (next) next.addEventListener("click", () => { w.step = 2; this._renderWizard(); });
+      const rfCap = this._$("wzRfCapture");
+      if (rfCap) rfCap.addEventListener("click", () => { this._startRfPacketCapture(); });
     } else if (w.step === 2) {
       this.shadowRoot.querySelectorAll("[data-amode]").forEach(t => t.addEventListener("click", () => {
         const idx = parseInt(t.dataset.actidx);
