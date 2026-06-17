@@ -1054,13 +1054,13 @@ class BroadlinkIRPanel extends HTMLElement {
       if (lm === "ir") {
         this._hass.connection.sendMessagePromise({
           type: "broadlink_ir_receiver/set_listen_mode",
-          entry_id: this._activeEntry, mode: "both"
+          entry_id: this._activeEntry, mode: "rf"
         }).then(() => {
-          if (e) e.listen_mode = "both";
-          this._toast("Saved — listen mode switched to IR+RF");
+          if (e) e.listen_mode = "rf";
+          this._toast("Saved — device switched to RF mode");
           this._renderTopbar();
         }).catch(() => {
-          this._toast("Saved — but switch listen mode to RF or Both manually");
+          this._toast("Saved — set listen mode to RF manually");
         });
       } else {
         this._toast("Saved — mapping active immediately");

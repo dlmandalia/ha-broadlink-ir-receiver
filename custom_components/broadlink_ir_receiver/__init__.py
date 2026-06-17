@@ -278,6 +278,13 @@ class BroadlinkIRListener:
                     self._stop_event.wait(2)
                     learning = False
 
+    @staticmethod
+    def _is_valid_rf_freq(freq):
+        for center in (315, 390, 418, 433.92):
+            if abs(freq - center) < 5:
+                return True
+        return False
+
     def _rf_listen_cycle(self) -> bytes | None:
         """One RF sweep+capture cycle. Returns RF data or None."""
         try:
@@ -287,6 +294,7 @@ class BroadlinkIRListener:
             return None
 
         deadline = time.monotonic() + 8
+        found_freq = None
         while time.monotonic() < deadline:
             self._stop_event.wait(0.2)
             if self._stop_event.is_set() or not self._enabled:
@@ -295,7 +303,7 @@ class BroadlinkIRListener:
                 except Exception:
                     pass
                 return None
-            if self._listen_mode != "rf":
+            if self._listen_mode not in ("rf", "both"):
                 try:
                     self._dev.cancel_sweep_frequency()
                 except Exception:
@@ -303,7 +311,8 @@ class BroadlinkIRListener:
                 return None
             try:
                 found, freq = self._dev.check_frequency()
-                if found:
+                if found and self._is_valid_rf_freq(freq):
+                    found_freq = freq
                     break
             except Exception:
                 return None
@@ -315,7 +324,7 @@ class BroadlinkIRListener:
             return None
 
         try:
-            self._dev.find_rf_packet(freq)
+            self._dev.find_rf_packet(found_freq)
         except Exception:
             return None
 
@@ -324,7 +333,7 @@ class BroadlinkIRListener:
             self._stop_event.wait(0.2)
             if self._stop_event.is_set() or not self._enabled:
                 return None
-            if self._listen_mode != "rf":
+            if self._listen_mode not in ("rf", "both"):
                 return None
             try:
                 data = self._dev.check_data()
@@ -525,13 +534,6 @@ async def ws_rf_sweep(hass, connection, msg):
         listener.enabled = False
         await asyncio.sleep(0.5)
 
-    def _is_valid_rf_freq(freq):
-        """Check if frequency is in a known RF remote band."""
-        for center in (315, 390, 418, 433.92):
-            if abs(freq - center) < 5:
-                return True
-        return False
-
     def _sweep():
         import time as _time
         _LOGGER.info("RF sweep started on %s", msg["entry_id"])
@@ -548,10 +550,10 @@ async def ws_rf_sweep(hass, connection, msg):
             if isinstance(result, tuple):
                 found, freq = result
                 if found:
-                    if _is_valid_rf_freq(freq):
+                    if BroadlinkListener._is_valid_rf_freq(freq):
                         _LOGGER.info("RF frequency found: %.2f MHz", freq)
                         return freq
-                    _LOGGER.warning("Ignoring invalid frequency %.2f MHz (noise)", freq)
+                    _LOGGER.warning("Ignoring noise frequency %.2f MHz", freq)
             elif result:
                 _LOGGER.warning("check_frequency returned non-tuple: %s", result)
         dev.cancel_sweep_frequency()
@@ -660,7 +662,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "broadlink-ir-panel",
-                "module_url": f"/api/{DOMAIN}/panel.js?v=276",
+                "module_url": f"/api/{DOMAIN}/panel.js?v=277",
             }
         },
         require_admin=False,
