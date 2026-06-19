@@ -67,7 +67,7 @@ class BroadlinkIRListener:
         self._thread: threading.Thread | None = None
         self._dev = None
         self._enabled = True
-        self._listen_mode = "ir"
+        self._listen_mode = "rf" if dev_type in RF_CAPABLE_DEVTYPES else "ir"
 
     @property
     def enabled(self) -> bool:
