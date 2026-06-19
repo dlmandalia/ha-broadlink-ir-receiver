@@ -129,7 +129,7 @@ class BroadlinkIRPanel extends HTMLElement {
   }
 
   _flashMatch(ev) {
-    const code = ev.nec_code || (ev.raw_hex || "").substring(0, 16);
+    const code = ev.protocol === "RF" ? (ev.rf_code || (ev.raw_hex || "").substring(8, 16)) : (ev.nec_code || (ev.raw_hex || "").substring(0, 16));
     const m = this._curMaps().find(x => x.ir_code === code);
     if (!m) return;
     const btn = this.shadowRoot.querySelector(`button.key[data-btn="${m.button}"]`);
@@ -232,7 +232,7 @@ class BroadlinkIRPanel extends HTMLElement {
     try {
       this._captureSub = await this._hass.connection.subscribeEvents((ev) => {
         if (activeHost && ev.data.host !== activeHost) return;
-        const code = ev.data.nec_code || (ev.data.raw_hex || "").substring(0, 16);
+        const code = ev.data.protocol === "RF" ? (ev.data.rf_code || (ev.data.raw_hex || "").substring(8, 16)) : (ev.data.nec_code || (ev.data.raw_hex || "").substring(0, 16));
         if (!code) return;
         this._wiz.ir_code = code;
         this._wiz.capturing = false;
@@ -1157,7 +1157,7 @@ class BroadlinkIRPanel extends HTMLElement {
       return;
     }
     el.innerHTML = codes.map((c, i) => {
-      const code = c.nec_code || (c.raw_hex || "").substring(0, 16) || "-";
+      const code = c.protocol === "RF" ? (c.rf_code || (c.raw_hex || "").substring(8, 16)) : (c.nec_code || (c.raw_hex || "").substring(0, 16)) || "-";
       const proto = c.protocol || "Unknown";
       const t = this._fmtTime(c.timestamp);
       const devName = c.device || c.host || "?";

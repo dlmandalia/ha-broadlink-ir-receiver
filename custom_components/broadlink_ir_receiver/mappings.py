@@ -77,31 +77,34 @@ class MappingsStore:
         self._data.get("devices", {}).pop(entry_id, None)
 
     @staticmethod
-    def _rf_match(stored: str, received: str) -> bool:
-        """Fuzzy match for RF codes — allow 2 hex chars (1 byte) difference."""
-        if len(stored) != len(received) or len(stored) < 8:
-            return False
-        diffs = sum(1 for a, b in zip(stored, received) if a != b)
-        return diffs <= 2
+    def _rf_stable(raw_hex: str) -> str:
+        """Extract stable bytes 4-7 from RF raw hex (skip header + noise)."""
+        return raw_hex[8:16] if len(raw_hex) >= 16 else raw_hex
 
     def start_executor(self) -> None:
         @callback
         def _handle_ir(event):
-            code = event.data.get("nec_code") or event.data.get("raw_hex", "")[:16]
             protocol = event.data.get("protocol", "")
             host = event.data.get("host")
+            is_rf = protocol == "RF"
+
+            if is_rf:
+                code = event.data.get("rf_code") or self._rf_stable(event.data.get("raw_hex", ""))
+            else:
+                code = event.data.get("nec_code") or event.data.get("raw_hex", "")[:16]
+
             if not code or not host:
                 return
             entry_id = self._find_entry_by_host(host)
             if not entry_id:
                 return
-            is_rf = protocol == "RF"
             device_data = self._data.get("devices", {}).get(entry_id, {})
             for remote in device_data.get("remotes", []):
                 for m in remote.get("mappings", []):
                     stored = m.get("ir_code", "")
                     if is_rf:
-                        if not self._rf_match(stored, code):
+                        stored_stable = self._rf_stable(stored) if len(stored) >= 16 else stored
+                        if stored_stable != code:
                             continue
                     else:
                         if stored != code:

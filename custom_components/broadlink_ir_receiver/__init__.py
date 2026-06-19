@@ -143,8 +143,10 @@ class BroadlinkIRListener:
 
     def _fire_event(self, nec_code: str | None, raw_data: bytes, protocol: str) -> None:
         raw_hex = raw_data.hex() if raw_data else ""
+        rf_code = raw_data[4:8].hex() if protocol == "RF" and raw_data and len(raw_data) >= 8 else None
         event_data = {
             "nec_code": nec_code,
+            "rf_code": rf_code,
             "raw_hex": raw_hex,
             "protocol": protocol,
             "device": self._name,
@@ -192,10 +194,11 @@ class BroadlinkIRListener:
                         learning = False
                         data = self._rf_listen_cycle()
                         if data:
-                            code_key = data[:8].hex()
+                            # RF stable code = bytes 4-7 (skip header + noise)
+                            rf_stable = data[4:8].hex() if len(data) >= 8 else data.hex()[:8]
                             now = time.monotonic()
-                            if code_key != last_code or (now - last_time) >= DEFAULT_DEBOUNCE:
-                                last_code = code_key
+                            if rf_stable != last_code or (now - last_time) >= DEFAULT_DEBOUNCE:
+                                last_code = rf_stable
                                 last_time = now
                                 self._fire_event(nec_code=None, raw_data=data, protocol="RF")
                         self._stop_event.wait(0.3)
@@ -211,10 +214,10 @@ class BroadlinkIRListener:
                             learning = False
                             data = self._rf_listen_cycle()
                             if data:
-                                code_key = data[:8].hex()
+                                rf_stable = data[4:8].hex() if len(data) >= 8 else data.hex()[:8]
                                 now = time.monotonic()
-                                if code_key != last_code or (now - last_time) >= DEFAULT_DEBOUNCE:
-                                    last_code = code_key
+                                if rf_stable != last_code or (now - last_time) >= DEFAULT_DEBOUNCE:
+                                    last_code = rf_stable
                                     last_time = now
                                     self._fire_event(nec_code=None, raw_data=data, protocol="RF")
                             continue
@@ -666,7 +669,9 @@ async def ws_rf_capture(hass, connection, msg):
         return
 
     rf_hex = rf_data.hex()
-    connection.send_result(msg["id"], {"rf_code": rf_hex[:16] or rf_hex, "raw_hex": rf_hex})
+    # Stable RF code = bytes 4-7 (hex chars 8-15), skipping header + noise bytes
+    rf_stable = rf_data[4:8].hex() if len(rf_data) >= 8 else rf_hex[:8]
+    connection.send_result(msg["id"], {"rf_code": rf_stable, "raw_hex": rf_hex})
 
 
 # ---------------------------------------------------------------------------
