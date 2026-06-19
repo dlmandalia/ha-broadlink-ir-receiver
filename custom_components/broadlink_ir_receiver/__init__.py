@@ -295,54 +295,33 @@ class BroadlinkIRListener:
         return False
 
     def _rf_listen_cycle(self) -> bytes | None:
-        """RF listen cycle: sweep_frequency to init RF hardware, find freq,
-        then find_rf_packet(freq) → poll check_data for signal."""
-        freq = getattr(self, "_rf_freq", None)
+        """RF listen: brief sweep to init hardware, then find_rf_packet + poll."""
+        freq = self._rf_freq
 
-        if not freq:
-            try:
-                self._dev.sweep_frequency()
-            except Exception:
-                self._stop_event.wait(1)
-                return None
+        # Brief sweep to wake RF hardware
+        try:
+            self._dev.sweep_frequency()
+        except Exception:
+            self._stop_event.wait(1)
+            return None
 
-            deadline = time.monotonic() + 8
-            while time.monotonic() < deadline:
-                self._stop_event.wait(0.2)
-                if self._stop_event.is_set() or not self._enabled:
-                    try:
-                        self._dev.cancel_sweep_frequency()
-                    except Exception:
-                        pass
-                    return None
-                if self._listen_mode not in ("rf", "both"):
-                    try:
-                        self._dev.cancel_sweep_frequency()
-                    except Exception:
-                        pass
-                    return None
-                try:
-                    found, f = self._dev.check_frequency()
-                    if found and self._is_valid_rf_freq(f):
-                        freq = f
-                        self._rf_freq = f
-                        break
-                except Exception:
-                    pass
-            else:
-                try:
-                    self._dev.cancel_sweep_frequency()
-                except Exception:
-                    pass
-                return None
+        self._stop_event.wait(0.5)
 
+        try:
+            self._dev.cancel_sweep_frequency()
+        except Exception:
+            pass
+
+        self._stop_event.wait(0.2)
+
+        # Listen on known frequency
         try:
             self._dev.find_rf_packet(freq)
         except Exception:
             self._stop_event.wait(1)
             return None
 
-        deadline = time.monotonic() + 8
+        deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             self._stop_event.wait(DEFAULT_POLL_INTERVAL)
             if self._stop_event.is_set() or not self._enabled:
