@@ -68,6 +68,7 @@ class BroadlinkIRListener:
         self._dev = None
         self._enabled = True
         self._listen_mode = "rf" if dev_type in RF_CAPABLE_DEVTYPES else "ir"
+        self._rf_freq = 433.92 if dev_type in RF_CAPABLE_DEVTYPES else None
 
     @property
     def enabled(self) -> bool:
