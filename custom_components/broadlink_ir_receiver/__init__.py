@@ -63,6 +63,7 @@ class BroadlinkIRListener:
         self._entry_id = entry_id
         self._dev_type = dev_type
         self._stop_event = threading.Event()
+        self._idle_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._dev = None
         self._enabled = True
@@ -159,9 +160,11 @@ class BroadlinkIRListener:
     def _run(self) -> None:
         while not self._stop_event.is_set():
             if not self._enabled:
+                self._idle_event.set()
                 self._stop_event.wait(0.5)
                 continue
 
+            self._idle_event.clear()
             if not self._connect():
                 self._stop_event.wait(10)
                 continue
@@ -484,17 +487,26 @@ async def ws_add_device(hass, connection, msg):
 @websocket_api.async_response
 async def ws_remove_device(hass, connection, msg):
     entry_id = msg["entry_id"]
-    entry = hass.config_entries.async_get_entry(entry_id)
-    if not entry or entry.domain != DOMAIN:
-        connection.send_error(msg["id"], "not_found", "Config entry not found")
-        return
 
     store = hass.data.get(DOMAIN, {}).get("_mappings_store")
     if store:
         store.remove_device(entry_id)
         await store.async_save()
 
-    await hass.config_entries.async_remove(entry_id)
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry and entry.domain == DOMAIN:
+        try:
+            await hass.config_entries.async_remove(entry_id)
+        except Exception as exc:
+            _LOGGER.warning("Error removing config entry %s: %s", entry_id, exc)
+
+    entry_data = hass.data.get(DOMAIN, {}).pop(entry_id, None)
+    if entry_data and "listener" in entry_data:
+        try:
+            await hass.async_add_executor_job(entry_data["listener"].stop)
+        except Exception:
+            pass
+
     connection.send_result(msg["id"], {"success": True})
 
 
@@ -532,10 +544,23 @@ async def ws_rf_sweep(hass, connection, msg):
     was_enabled = listener.enabled
     if was_enabled:
         listener.enabled = False
-        await asyncio.sleep(0.5)
+        idle_ok = await hass.async_add_executor_job(listener._idle_event.wait, 5)
+        if not idle_ok:
+            _LOGGER.warning("Listener did not go idle in 5s, proceeding anyway")
 
     def _sweep():
         import time as _time
+
+        try:
+            dev.cancel_sweep_frequency()
+        except Exception:
+            pass
+        try:
+            dev.check_data()
+        except Exception:
+            pass
+        _time.sleep(0.3)
+
         _LOGGER.info("RF sweep started on %s", msg["entry_id"])
         dev.sweep_frequency()
         deadline = _time.monotonic() + 15
@@ -550,7 +575,7 @@ async def ws_rf_sweep(hass, connection, msg):
             if isinstance(result, tuple):
                 found, freq = result
                 if found:
-                    if BroadlinkListener._is_valid_rf_freq(freq):
+                    if BroadlinkIRListener._is_valid_rf_freq(freq):
                         _LOGGER.info("RF frequency found: %.2f MHz", freq)
                         return freq
                     _LOGGER.warning("Ignoring noise frequency %.2f MHz", freq)
@@ -662,7 +687,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "broadlink-ir-panel",
-                "module_url": f"/api/{DOMAIN}/panel.js?v=277",
+                "module_url": f"/api/{DOMAIN}/panel.js?v=279",
             }
         },
         require_admin=False,

@@ -246,17 +246,36 @@ class BroadlinkIRPanel extends HTMLElement {
     }
   }
 
+  _startRfTimer(seconds) {
+    this._clearRfTimer();
+    this._wiz.rfCountdown = seconds;
+    this._renderWizard();
+    this._rfTimerInterval = setInterval(() => {
+      if (!this._wiz) { this._clearRfTimer(); return; }
+      this._wiz.rfCountdown = Math.max(0, (this._wiz.rfCountdown || 0) - 1);
+      const el = this.shadowRoot.querySelector("#rfTimer");
+      if (el) el.textContent = this._wiz.rfCountdown + "s";
+    }, 1000);
+  }
+
+  _clearRfTimer() {
+    if (this._rfTimerInterval) { clearInterval(this._rfTimerInterval); this._rfTimerInterval = null; }
+  }
+
   async _startRfCapture() {
     this._wiz.rfPhase = 1;
     this._wiz.rfFrequency = null;
+    this._startRfTimer(15);
     this._renderWizard();
     try {
       const r = await this._hass.connection.sendMessagePromise({
         type: "broadlink_ir_receiver/rf_sweep",
         entry_id: this._activeEntry,
       });
+      this._clearRfTimer();
       this._wiz.rfFrequency = r.frequency;
     } catch (e) {
+      this._clearRfTimer();
       this._wiz.capturing = false;
       this._wiz.captureError = e.message || "Frequency scan failed";
       this._renderWizard();
@@ -264,24 +283,28 @@ class BroadlinkIRPanel extends HTMLElement {
     }
     this._wiz.rfPhase = 2;
     this._wiz.rfWaiting = true;
+    this._wiz.rfCountdown = null;
     this._renderWizard();
   }
 
   async _startRfPacketCapture() {
     this._wiz.rfWaiting = false;
     this._wiz.rfPhase = 3;
+    this._startRfTimer(10);
     this._renderWizard();
     try {
       const r = await this._hass.connection.sendMessagePromise({
         type: "broadlink_ir_receiver/rf_capture",
         entry_id: this._activeEntry,
       });
+      this._clearRfTimer();
       this._wiz.ir_code = r.rf_code || r.raw_hex?.substring(0, 16);
       this._wiz.raw_hex = r.raw_hex;
       this._wiz.capturing = false;
       this._wiz.rfPhase = 0;
       this._renderWizard();
     } catch (e) {
+      this._clearRfTimer();
       this._wiz.capturing = false;
       this._wiz.rfPhase = 0;
       this._wiz.captureError = e.message || "RF capture failed";
@@ -290,6 +313,7 @@ class BroadlinkIRPanel extends HTMLElement {
   }
 
   _cancelCapture() {
+    this._clearRfTimer();
     if (this._captureSub) { this._captureSub(); this._captureSub = null; }
   }
 
@@ -422,7 +446,7 @@ class BroadlinkIRPanel extends HTMLElement {
       #toast.show{transform:translateX(-50%) translateY(0)}
     `;
     this.shadowRoot.innerHTML = `<style>${S}</style>
-      <div class="header"><h1>IR Remote &amp; Automation Wizard</h1><span style="margin-left:auto;font-size:11px;color:var(--secondary-text-color,#9aa3ad)">v2.7.0</span></div>
+      <div class="header"><h1>IR Remote &amp; Automation Wizard</h1><span style="margin-left:auto;font-size:11px;color:var(--secondary-text-color,#9aa3ad)">v2.7.1</span></div>
       <div class="topbar" id="topbar"></div>
       <div class="layout">
         <div class="panel"><div class="remote-pick"><select id="remoteSel"></select><button class="iconbtn" id="newRemote" title="Add remote">＋</button><button class="iconbtn danger" id="delRemote" title="Delete remote">🗑</button></div><div id="addRemoteForm" style="display:none;padding:8px 0"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><select id="addRemoteType" style="padding:6px 8px;border-radius:6px;border:1px solid var(--divider-color,#313742);background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);font-size:12px"><option value="ir">IR Remote</option></select><input id="addRemoteName" placeholder="Remote name" style="flex:1;min-width:100px;padding:6px 8px;border-radius:6px;border:1px solid var(--divider-color,#313742);background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);font-size:12px"><button class="btn primary" id="addRemoteGo" style="font-size:12px;padding:6px 12px">Add</button><button class="btn ghost" id="addRemoteCancel" style="font-size:12px;padding:6px 8px">Cancel</button></div></div><h2 id="remoteTitle">Remote</h2><div class="remote"><div id="remoteGrid"></div><div class="cont"><div class="lbl"><span>Continuous control</span></div><div class="readout" id="cVal">30%</div><input type="range" id="cSlider" min="0" max="100" value="30"><div class="rocker"><button class="key" id="cMinus">– hold</button><button class="key" id="cPlus">+ hold</button></div><div class="presets"><button class="chip" data-p="20">20%</button><button class="chip" data-p="30">30%</button><button class="chip" data-p="50">50%</button></div><div class="note">Hold –/+ to ramp. UX for step-mode mappings.</div></div></div></div>
@@ -848,8 +872,10 @@ class BroadlinkIRPanel extends HTMLElement {
       const btnName = this._esc(this._label(w.button));
 
       if (isRFcap && phase === 1) {
+        const cd = w.rfCountdown != null ? w.rfCountdown : "";
         return `${modeBadge}<div class="capture-box"><div class="pulse">📻</div>
           <div style="font-size:16px;font-weight:600">Step 1: Scanning for frequency…</div>
+          ${cd !== "" ? `<div id="rfTimer" style="font-size:28px;font-weight:700;color:#ff9800;margin:8px 0">${cd}s</div>` : ""}
           <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px"><b>Hold down</b> the <b>${btnName}</b> button on your remote</div>
           <div style="color:var(--secondary-text-color);font-size:11px;margin-top:4px">Keep holding for 3-5 seconds while the device scans.</div></div>
           <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button></div>`;
@@ -869,8 +895,10 @@ class BroadlinkIRPanel extends HTMLElement {
       }
 
       if (isRFcap && phase === 3) {
+        const cd = w.rfCountdown != null ? w.rfCountdown : "";
         return `${modeBadge}<div class="capture-box"><div class="pulse">📻</div>
           <div style="font-size:16px;font-weight:600">Step 2: Capturing RF code…</div>
+          ${cd !== "" ? `<div id="rfTimer" style="font-size:28px;font-weight:700;color:#ff9800;margin:8px 0">${cd}s</div>` : ""}
           <div style="color:var(--secondary-text-color);font-size:13px;margin-top:6px">Press the <b>${btnName}</b> button now if you haven't already.</div></div>
           <div class="row-btns"><button class="btn ghost" id="wzCancel">Cancel</button></div>`;
       }
