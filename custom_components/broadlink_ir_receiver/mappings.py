@@ -76,23 +76,39 @@ class MappingsStore:
     def remove_device(self, entry_id: str) -> None:
         self._data.get("devices", {}).pop(entry_id, None)
 
+    @staticmethod
+    def _rf_match(stored: str, received: str) -> bool:
+        """Fuzzy match for RF codes — allow 2 hex chars (1 byte) difference."""
+        if len(stored) != len(received) or len(stored) < 8:
+            return False
+        diffs = sum(1 for a, b in zip(stored, received) if a != b)
+        return diffs <= 2
+
     def start_executor(self) -> None:
         @callback
         def _handle_ir(event):
             code = event.data.get("nec_code") or event.data.get("raw_hex", "")[:16]
+            protocol = event.data.get("protocol", "")
             host = event.data.get("host")
             if not code or not host:
                 return
             entry_id = self._find_entry_by_host(host)
             if not entry_id:
                 return
+            is_rf = protocol == "RF"
             device_data = self._data.get("devices", {}).get(entry_id, {})
             for remote in device_data.get("remotes", []):
                 for m in remote.get("mappings", []):
-                    if m.get("ir_code") != code:
-                        continue
+                    stored = m.get("ir_code", "")
+                    if is_rf:
+                        if not self._rf_match(stored, code):
+                            continue
+                    else:
+                        if stored != code:
+                            continue
                     _LOGGER.info(
-                        "IR match: %s on remote '%s' (device %s)",
+                        "%s match: %s on remote '%s' (device %s)",
+                        protocol or "IR",
                         code,
                         remote.get("name"),
                         entry_id,
