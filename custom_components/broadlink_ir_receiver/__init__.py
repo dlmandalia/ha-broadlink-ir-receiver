@@ -289,51 +289,19 @@ class BroadlinkIRListener:
         return False
 
     def _rf_listen_cycle(self) -> bytes | None:
-        """One RF sweep+capture cycle. Returns RF data or None."""
+        """Continuous RF listen: find_rf_packet(freq) then poll check_data.
+        Skips the slow sweep phase — uses 433.92 MHz (most common) or stored freq.
+        """
+        freq = getattr(self, "_rf_freq", 433.92)
         try:
-            self._dev.sweep_frequency()
+            self._dev.find_rf_packet(freq)
         except Exception:
             self._stop_event.wait(1)
             return None
 
         deadline = time.monotonic() + 8
-        found_freq = None
         while time.monotonic() < deadline:
-            self._stop_event.wait(0.2)
-            if self._stop_event.is_set() or not self._enabled:
-                try:
-                    self._dev.cancel_sweep_frequency()
-                except Exception:
-                    pass
-                return None
-            if self._listen_mode not in ("rf", "both"):
-                try:
-                    self._dev.cancel_sweep_frequency()
-                except Exception:
-                    pass
-                return None
-            try:
-                found, freq = self._dev.check_frequency()
-                if found and self._is_valid_rf_freq(freq):
-                    found_freq = freq
-                    break
-            except Exception:
-                return None
-        else:
-            try:
-                self._dev.cancel_sweep_frequency()
-            except Exception:
-                pass
-            return None
-
-        try:
-            self._dev.find_rf_packet(found_freq)
-        except Exception:
-            return None
-
-        deadline = time.monotonic() + 8
-        while time.monotonic() < deadline:
-            self._stop_event.wait(0.2)
+            self._stop_event.wait(DEFAULT_POLL_INTERVAL)
             if self._stop_event.is_set() or not self._enabled:
                 return None
             if self._listen_mode not in ("rf", "both"):
@@ -602,6 +570,7 @@ async def ws_rf_sweep(hass, connection, msg):
 
     data["_rf_frequency"] = freq
     data["_rf_restore_listener"] = was_enabled
+    listener._rf_freq = freq
     connection.send_result(msg["id"], {"status": "frequency_found", "frequency": round(freq, 2)})
 
 
@@ -687,7 +656,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "broadlink-ir-panel",
-                "module_url": f"/api/{DOMAIN}/panel.js?v=279",
+                "module_url": f"/api/{DOMAIN}/panel.js?v=280",
             }
         },
         require_admin=False,
