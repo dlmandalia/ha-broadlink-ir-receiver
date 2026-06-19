@@ -274,6 +274,12 @@ class BroadlinkIRPanel extends HTMLElement {
       });
       this._clearRfTimer();
       this._wiz.rfFrequency = r.frequency;
+      // Store detected frequency on the remote config
+      const remote = this._curRemote();
+      if (remote && r.frequency) {
+        remote.rf_frequency = r.frequency;
+        this._saveConfig();
+      }
     } catch (e) {
       this._clearRfTimer();
       this._wiz.capturing = false;
@@ -446,10 +452,10 @@ class BroadlinkIRPanel extends HTMLElement {
       #toast.show{transform:translateX(-50%) translateY(0)}
     `;
     this.shadowRoot.innerHTML = `<style>${S}</style>
-      <div class="header"><h1>IR Remote &amp; Automation Wizard</h1><span style="margin-left:auto;font-size:11px;color:var(--secondary-text-color,#9aa3ad)">v2.7.1</span></div>
+      <div class="header"><h1>IR Remote &amp; Automation Wizard</h1><span style="margin-left:auto;font-size:11px;color:var(--secondary-text-color,#9aa3ad)">v2.8.0</span></div>
       <div class="topbar" id="topbar"></div>
       <div class="layout">
-        <div class="panel"><div class="remote-pick"><select id="remoteSel"></select><button class="iconbtn" id="newRemote" title="Add remote">＋</button><button class="iconbtn danger" id="delRemote" title="Delete remote">🗑</button></div><div id="addRemoteForm" style="display:none;padding:8px 0"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><select id="addRemoteType" style="padding:6px 8px;border-radius:6px;border:1px solid var(--divider-color,#313742);background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);font-size:12px"><option value="ir">IR Remote</option></select><input id="addRemoteName" placeholder="Remote name" style="flex:1;min-width:100px;padding:6px 8px;border-radius:6px;border:1px solid var(--divider-color,#313742);background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);font-size:12px"><button class="btn primary" id="addRemoteGo" style="font-size:12px;padding:6px 12px">Add</button><button class="btn ghost" id="addRemoteCancel" style="font-size:12px;padding:6px 8px">Cancel</button></div></div><h2 id="remoteTitle">Remote</h2><div class="remote"><div id="remoteGrid"></div><div class="cont"><div class="lbl"><span>Continuous control</span></div><div class="readout" id="cVal">30%</div><input type="range" id="cSlider" min="0" max="100" value="30"><div class="rocker"><button class="key" id="cMinus">– hold</button><button class="key" id="cPlus">+ hold</button></div><div class="presets"><button class="chip" data-p="20">20%</button><button class="chip" data-p="30">30%</button><button class="chip" data-p="50">50%</button></div><div class="note">Hold –/+ to ramp. UX for step-mode mappings.</div></div></div></div>
+        <div class="panel"><div class="remote-pick"><select id="remoteSel"></select><button class="iconbtn" id="newRemote" title="Add remote">＋</button><button class="iconbtn danger" id="delRemote" title="Delete remote">🗑</button></div><div id="addRemoteForm" style="display:none;padding:8px 0"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><select id="addRemoteType" style="padding:6px 8px;border-radius:6px;border:1px solid var(--divider-color,#313742);background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);font-size:12px"><option value="ir">IR Remote</option></select><input id="addRemoteName" placeholder="Remote name" style="flex:1;min-width:100px;padding:6px 8px;border-radius:6px;border:1px solid var(--divider-color,#313742);background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);font-size:12px"><input id="addRemoteFreq" type="number" step="0.01" placeholder="RF freq MHz (e.g. 433.92)" style="display:none;width:160px;padding:6px 8px;border-radius:6px;border:1px solid var(--divider-color,#313742);background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);font-size:12px"><button class="btn primary" id="addRemoteGo" style="font-size:12px;padding:6px 12px">Add</button><button class="btn ghost" id="addRemoteCancel" style="font-size:12px;padding:6px 8px">Cancel</button></div></div><h2 id="remoteTitle">Remote</h2><div class="remote"><div id="remoteGrid"></div><div class="cont"><div class="lbl"><span>Continuous control</span></div><div class="readout" id="cVal">30%</div><input type="range" id="cSlider" min="0" max="100" value="30"><div class="rocker"><button class="key" id="cMinus">– hold</button><button class="key" id="cPlus">+ hold</button></div><div class="presets"><button class="chip" data-p="20">20%</button><button class="chip" data-p="30">30%</button><button class="chip" data-p="50">50%</button></div><div class="note">Hold –/+ to ramp. UX for step-mode mappings.</div></div></div></div>
         <div><div class="panel" id="middle"></div></div>
         <div class="panel"><div class="log-hdr"><h2 style="margin:0">Live IR/RF Log</h2><div class="log-actions"><select id="logFilter" style="background:var(--card-background-color,#232830);color:var(--primary-text-color,#e4e7eb);border:1px solid var(--divider-color,#313742);border-radius:6px;padding:4px 8px;font-size:11px"><option value="">All devices</option></select><button class="sbtn ghost" id="clearLog">Clear</button></div></div><div class="log-scroll" id="log"></div></div>
       </div>
@@ -467,6 +473,10 @@ class BroadlinkIRPanel extends HTMLElement {
       typeSel.innerHTML = canRF
         ? '<option value="ir">IR Remote</option><option value="rf">RF Remote</option>'
         : '<option value="ir">IR Remote</option>';
+      const freqInput = this._$("addRemoteFreq");
+      freqInput.style.display = "none";
+      freqInput.value = "433.92";
+      typeSel.onchange = () => { freqInput.style.display = typeSel.value === "rf" ? "" : "none"; };
       this._$("addRemoteName").value = "Remote " + (dc.remotes.length + 1);
       form.style.display = "block";
       this._$("addRemoteName").focus();
@@ -479,7 +489,12 @@ class BroadlinkIRPanel extends HTMLElement {
       const type = this._$("addRemoteType").value;
       const name = this._$("addRemoteName").value.trim() || ("Remote " + (dc.remotes.length + 1));
       const id = "r" + Date.now();
-      dc.remotes.push({ id, name, type, mappings: [] });
+      const remote = { id, name, type, mappings: [] };
+      if (type === "rf") {
+        const f = parseFloat(this._$("addRemoteFreq").value);
+        remote.rf_frequency = (f > 0 && f < 1000) ? f : 433.92;
+      }
+      dc.remotes.push(remote);
       dc.sel = id;
       this._wiz = null;
       this._$("addRemoteForm").style.display = "none";
@@ -688,7 +703,8 @@ class BroadlinkIRPanel extends HTMLElement {
     const cur = this._curRemote();
     const rt = (cur.type || "ir").toUpperCase();
     const title = this._$("remoteTitle");
-    if (title) title.innerHTML = `${this._esc(cur.name)} <span class="badge ${cur.type === "rf" ? "rf" : "ir"}" style="font-size:10px;padding:1px 6px;vertical-align:middle">${rt}</span>`;
+    const freqTag = cur.type === "rf" && cur.rf_frequency ? ` <span style="font-size:10px;color:var(--secondary-text-color)">${cur.rf_frequency} MHz</span>` : "";
+    if (title) title.innerHTML = `${this._esc(cur.name)} <span class="badge ${cur.type === "rf" ? "rf" : "ir"}" style="font-size:10px;padding:1px 6px;vertical-align:middle">${rt}</span>${freqTag}`;
   }
 
   _renderRemote() {

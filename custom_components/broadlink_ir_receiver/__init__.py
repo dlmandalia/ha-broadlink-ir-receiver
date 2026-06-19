@@ -294,31 +294,35 @@ class BroadlinkIRListener:
                 return True
         return False
 
-    def _rf_listen_cycle(self) -> bytes | None:
-        """RF listen: brief sweep to init hardware, then find_rf_packet + poll."""
-        freq = self._rf_freq
+    def _get_rf_frequencies(self) -> set[float]:
+        """Read RF frequencies from stored remote configs."""
+        store = self._hass.data.get(DOMAIN, {}).get("_mappings_store")
+        if not store:
+            return set()
+        device_data = store.data.get("devices", {}).get(self._entry_id, {})
+        freqs = set()
+        for remote in device_data.get("remotes", []):
+            f = remote.get("rf_frequency")
+            if f and isinstance(f, (int, float)) and f > 0:
+                freqs.add(float(f))
+        return freqs
 
-        # Brief sweep to wake RF hardware
-        try:
-            self._dev.sweep_frequency()
-        except Exception:
-            self._stop_event.wait(1)
+    def _rf_listen_cycle(self) -> bytes | None:
+        """RF listen: find_rf_packet on stored frequency, poll check_data."""
+        freqs = self._get_rf_frequencies()
+        if not freqs:
+            freq = self._rf_freq
+        else:
+            freq = next(iter(freqs))
+
+        if not freq:
+            self._stop_event.wait(5)
             return None
 
-        self._stop_event.wait(0.5)
-
-        try:
-            self._dev.cancel_sweep_frequency()
-        except Exception:
-            pass
-
-        self._stop_event.wait(0.2)
-
-        # Listen on known frequency
         try:
             self._dev.find_rf_packet(freq)
         except Exception:
-            self._stop_event.wait(1)
+            self._stop_event.wait(2)
             return None
 
         deadline = time.monotonic() + 10
@@ -678,7 +682,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "broadlink-ir-panel",
-                "module_url": f"/api/{DOMAIN}/panel.js?v=280",
+                "module_url": f"/api/{DOMAIN}/panel.js?v=281",
             }
         },
         require_admin=False,
