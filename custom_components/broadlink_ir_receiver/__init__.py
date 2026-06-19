@@ -604,21 +604,38 @@ async def ws_rf_sweep(hass, connection, msg):
     {
         vol.Required("type"): "broadlink_ir_receiver/rf_capture",
         vol.Required("entry_id"): str,
+        vol.Optional("frequency"): vol.Coerce(float),
     }
 )
 @websocket_api.async_response
 async def ws_rf_capture(hass, connection, msg):
-    """Phase 2: capture RF packet. User short-presses button."""
+    """Capture RF packet. Pauses listener, calls find_rf_packet(freq), polls check_data."""
     dev, data = _get_rf_device(hass, msg, connection)
     if dev is None:
         return
 
-    freq = data.get("_rf_frequency")
-    _LOGGER.info("RF capture phase 2: freq=%s for %s", freq, msg["entry_id"])
+    freq = msg.get("frequency") or data.get("_rf_frequency")
+    if not freq:
+        connection.send_error(msg["id"], "no_frequency", "No RF frequency — run sweep first or set on remote")
+        return
+
+    _LOGGER.info("RF capture: freq=%s for %s", freq, msg["entry_id"])
+
+    # Pause listener if running (may not be paused if sweep was skipped)
+    listener = data.get("listener")
+    was_enabled = False
+    if listener and listener.enabled:
+        was_enabled = True
+        listener.enabled = False
+        await hass.async_add_executor_job(listener._idle_event.wait, 5)
 
     def _capture():
         import time as _time
-        _LOGGER.info("Calling find_rf_packet(freq=%s)", freq)
+        try:
+            dev.check_data()
+        except Exception:
+            pass
+        _time.sleep(0.2)
         dev.find_rf_packet(freq)
         deadline = _time.monotonic() + 10
         while _time.monotonic() < deadline:
@@ -631,25 +648,21 @@ async def ws_rf_capture(hass, connection, msg):
             except Exception as ex:
                 _LOGGER.debug("check_data: %s", ex)
                 continue
-        _LOGGER.info("RF capture timed out")
         return None
-
-    def _restore():
-        if data.get("_rf_restore_listener"):
-            data["listener"].enabled = True
-            data.pop("_rf_restore_listener", None)
 
     try:
         rf_data = await hass.async_add_executor_job(_capture)
     except Exception as exc:
-        _restore()
+        if was_enabled and listener:
+            listener.enabled = True
         connection.send_error(msg["id"], "rf_error", str(exc))
         return
 
-    _restore()
+    if was_enabled and listener:
+        listener.enabled = True
 
     if not rf_data:
-        connection.send_error(msg["id"], "rf_timeout", "RF packet capture timed out — press button again")
+        connection.send_error(msg["id"], "rf_timeout", "No RF signal — press button and try again")
         return
 
     rf_hex = rf_data.hex()

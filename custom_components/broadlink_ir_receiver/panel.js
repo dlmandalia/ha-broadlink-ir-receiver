@@ -263,6 +263,17 @@ class BroadlinkIRPanel extends HTMLElement {
   }
 
   async _startRfCapture() {
+    const remote = this._curRemote();
+    const knownFreq = remote?.rf_frequency;
+
+    if (knownFreq) {
+      // Frequency already known — skip sweep, go straight to capture
+      this._wiz.rfFrequency = knownFreq;
+      this._startRfPacketCapture();
+      return;
+    }
+
+    // No stored frequency — full sweep
     this._wiz.rfPhase = 1;
     this._wiz.rfFrequency = null;
     this._startRfTimer(15);
@@ -274,8 +285,6 @@ class BroadlinkIRPanel extends HTMLElement {
       });
       this._clearRfTimer();
       this._wiz.rfFrequency = r.frequency;
-      // Store detected frequency on the remote config
-      const remote = this._curRemote();
       if (remote && r.frequency) {
         remote.rf_frequency = r.frequency;
         this._saveConfig();
@@ -298,11 +307,13 @@ class BroadlinkIRPanel extends HTMLElement {
     this._wiz.rfPhase = 3;
     this._startRfTimer(10);
     this._renderWizard();
+    const captureMsg = {
+      type: "broadlink_ir_receiver/rf_capture",
+      entry_id: this._activeEntry,
+    };
+    if (this._wiz.rfFrequency) captureMsg.frequency = this._wiz.rfFrequency;
     try {
-      const r = await this._hass.connection.sendMessagePromise({
-        type: "broadlink_ir_receiver/rf_capture",
-        entry_id: this._activeEntry,
-      });
+      const r = await this._hass.connection.sendMessagePromise(captureMsg);
       this._clearRfTimer();
       this._wiz.ir_code = r.rf_code || r.raw_hex?.substring(0, 16);
       this._wiz.raw_hex = r.raw_hex;
