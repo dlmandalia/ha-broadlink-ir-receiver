@@ -186,7 +186,7 @@ class BroadlinkIRListener:
                 mode = self._listen_mode if is_rf_capable else "ir"
 
                 try:
-                    # --- RF-only mode: continuous sweep ---
+                    # --- RF-only mode: find_rf_packet + poll ---
                     if mode == "rf":
                         learning = False
                         data = self._rf_listen_cycle()
@@ -197,6 +197,7 @@ class BroadlinkIRListener:
                                 last_code = code_key
                                 last_time = now
                                 self._fire_event(nec_code=None, raw_data=data, protocol="RF")
+                        self._stop_event.wait(0.3)
                         continue
 
                     # --- Both mode: alternate IR + RF ---
@@ -273,14 +274,17 @@ class BroadlinkIRListener:
 
                 except broadlink.exceptions.DeviceOfflineError:
                     _LOGGER.warning("Device %s offline, reconnecting...", self._name)
+                    self._dev = None
                     self._stop_event.wait(10)
                     learning = False
                     break
 
                 except Exception:
                     _LOGGER.exception("Error in listener for %s", self._name)
+                    self._dev = None
                     self._stop_event.wait(2)
                     learning = False
+                    break
 
     @staticmethod
     def _is_valid_rf_freq(freq):
